@@ -289,7 +289,7 @@ mod test {
     #[test]
     fn bytes_data_encoding() {
         let data = "hello".as_bytes();
-        let mut e = SegmentEncoder::new(Settings::new(Version::new(1).unwrap(), Ecl::L));
+        let mut e = SegmentEncoder::new(Settings::new(Version::V1, Ecl::L));
         // Encoding bytes does not change the bytes themselves
         e.encode_append_bytes(data).unwrap();
         assert_eq!(&e.bits.into_vec(), data);
@@ -299,7 +299,7 @@ mod test {
     fn bytes_header() {
         let data = "mononoke".as_bytes();
         let s = Segment::new(data, 0..data.len(), SegmentKind::Bytes);
-        let mut e = SegmentEncoder::new(Settings::new(Version::new(1).unwrap(), Ecl::L));
+        let mut e = SegmentEncoder::new(Settings::new(Version::V1, Ecl::L));
         e.append_segment_header(&s);
         // ---------------------[ HEADER ... | CHARACTER COUNT ............]
         assert_eq!(e.bits, bits![0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0])
