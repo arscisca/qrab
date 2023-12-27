@@ -1,3 +1,4 @@
+pub(crate) mod builder;
 mod ecc;
 pub(crate) mod encoder;
 pub(crate) mod segment;

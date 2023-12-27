@@ -1,10 +1,8 @@
 use reed_solomon::Encoder as RsEncoder;
 
-use crate::{
-    encode::{
-        encoder::{Codewords, Settings},
-        EncodingError,
-    },
+use crate::encode::{
+    encoder::{Codewords, Settings},
+    EncodingError,
 };
 
 pub struct Block {
@@ -32,14 +30,17 @@ impl ReedSolomonEncoder {
     }
 
     fn num_ecc_codewords_per_block(&self) -> usize {
-        crate::qrcode::properties::num_ecc_codewords_per_block(self.settings.version, self.settings.ecl)
+        crate::qrcode::properties::num_ecc_codewords_per_block(
+            self.settings.version,
+            self.settings.ecl,
+        )
     }
 
     fn num_data_codewords_per_block(&self) -> usize {
         self.num_codewords_per_block() - self.num_ecc_codewords_per_block()
     }
 
-    fn encode(self, codewords: Codewords) -> Result<Vec<Block>, EncodingError> {
+    pub fn encode(self, codewords: Codewords) -> Result<Vec<Block>, EncodingError> {
         let codewords: Vec<u8> = codewords.into();
 
         // Encode each block
@@ -51,7 +52,10 @@ impl ReedSolomonEncoder {
             let range_end = range_start + self.num_data_codewords_per_block();
             let data = &codewords[range_start..range_end];
             let ecc = encoder.encode(data);
-            let block = Block { data: ecc.data().to_vec(), ecc: ecc.ecc().to_vec()};
+            let block = Block {
+                data: ecc.data().to_vec(),
+                ecc: ecc.ecc().to_vec(),
+            };
             blocks.push(block);
         }
         Ok(blocks)
@@ -61,7 +65,7 @@ impl ReedSolomonEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{Encoder, Ecl, Version, encode::encoder::ConstrainedEncoder, qrcode::properties};
+    use crate::{encode::encoder::ConstrainedEncoder, qrcode::properties, Ecl, Encoder, Version};
 
     fn codewords(data: &str, settings: Settings) -> Codewords {
         let constrained = ConstrainedEncoder::new(settings);
@@ -77,6 +81,9 @@ mod test {
         let blocks = ecc
             .encode(codewords("eren yeager", settings.clone()))
             .unwrap();
-        assert_eq!(blocks.len(), properties::num_ecc_blocks(settings.version, settings.ecl));
+        assert_eq!(
+            blocks.len(),
+            properties::num_ecc_blocks(settings.version, settings.ecl)
+        );
     }
 }

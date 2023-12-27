@@ -34,7 +34,7 @@ pub(crate) struct Segment<'a> {
 impl<'a> Segment<'a> {
     /// Create a new segment in the `range` of the `data` slice. Note that `data` refers to the slice that is yet-to-be
     /// segmented.
-    pub fn new(data: &'a[u8], range: std::ops::Range<usize>, kind: SegmentKind) -> Self {
+    pub fn new(data: &'a [u8], range: std::ops::Range<usize>, kind: SegmentKind) -> Self {
         Self { data, range, kind }
     }
 
@@ -81,7 +81,13 @@ impl<'a> Segment<'a> {
 
 impl<'a> std::fmt::Debug for Segment<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}[{:?}]({:?})", self.kind, self.range, self.data.as_ref())
+        write!(
+            f,
+            "{:?}[{:?}]({:?})",
+            self.kind,
+            self.range,
+            self.data.as_ref()
+        )
     }
 }
 

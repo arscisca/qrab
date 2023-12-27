@@ -66,7 +66,7 @@ impl TryFrom<u8> for Version {
             38 => Ok(Self::V38),
             39 => Ok(Self::V39),
             40 => Ok(Self::V40),
-            n => Err(InvalidVersionNumber(n))
+            n => Err(InvalidVersionNumber(n)),
         }
     }
 }
@@ -91,5 +91,17 @@ pub struct InvalidVersionNumber(pub u8);
 impl std::fmt::Debug for InvalidVersionNumber {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn comparison() {
+        assert_eq!(Version::V5, Version::V5);
+        assert!(Version::V3 < Version::V8);
+        assert!(Version::V29 >= Version::V17);
     }
 }

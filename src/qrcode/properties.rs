@@ -49,6 +49,7 @@ pub fn num_data_bits(version: Version, ecl: Ecl) -> usize {
     num_data_codewords(version, ecl) * 8
 }
 
+/// Get the number of ECC encoding blocks given `version` and `ecl`.
 #[rustfmt::skip]
 pub fn num_ecc_blocks(version: Version, ecl: Ecl) -> usize {
     let table: [usize; 40] = match ecl {
@@ -109,4 +110,9 @@ pub fn num_ecc_codewords_per_block(version: Version, ecl: Ecl) -> usize {
         ],
     };
     table[version.number() as usize - 1]
+}
+
+/// Get the size of a QR code symbol given its `version`, as in the length of its side.
+pub fn symbol_size(version: Version) -> usize {
+    version.number() as usize * 4 + 17
 }

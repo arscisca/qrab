@@ -1,12 +1,11 @@
+use bitvec::prelude::*;
+
 use super::{
     segment::{Segment, SegmentKind},
     EncodingError,
 };
-use crate::{
-    Ecl, QrCode, Version,
-    qrcode::properties,
-};
-use bitvec::prelude::*;
+use crate::encode::ecc::ReedSolomonEncoder;
+use crate::{qrcode::properties, Ecl, QrCode, Version};
 use std::ops::BitXorAssign;
 
 /// Encoding constraint that determines what to prioritize when encoding the QR symbol.
@@ -160,8 +159,11 @@ impl ConstrainedEncoder {
 
     /// Encode the associated data into the QR code.
     pub fn encode(self, segments: Vec<Segment>) -> Result<QrCode, EncodingError> {
+        let settings = self.settings.clone();
         // Generate codewords
-        let codewords = self.encode_segments(segments);
+        let codewords = self.encode_segments(segments)?;
+        // Add ECC encoding
+        let with_ecc = ReedSolomonEncoder::new(settings).encode(codewords);
         todo!("Ecc generation")
     }
 
@@ -193,7 +195,7 @@ impl SegmentEncoder {
     pub fn new(settings: Settings) -> Self {
         Self {
             bits: Bits::with_capacity(properties::num_data_bits(settings.version, settings.ecl)),
-            settings
+            settings,
         }
     }
 
