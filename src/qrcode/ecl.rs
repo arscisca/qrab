@@ -11,6 +11,17 @@ pub enum Ecl {
     H,
 }
 
+impl Ecl {
+    pub fn code(&self) -> u8 {
+        match self {
+            Self::L => 0b01,
+            Self::M => 0b00,
+            Self::Q => 0b11,
+            Self::H => 0b10,
+        }
+    }
+}
+
 impl From<&Ecl> for char {
     fn from(value: &Ecl) -> Self {
         match value {

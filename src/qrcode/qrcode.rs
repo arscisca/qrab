@@ -12,6 +12,13 @@ pub struct QrCode {
 }
 
 impl QrCode {
+    pub(crate) fn new(matrix: Matrix, version: Version, ecl: Ecl) -> Self {
+        Self {
+            matrix,
+            version,
+            ecl,
+        }
+    }
     /// Get the module at row `i` and column `j`.
     pub fn get(&self, i: usize, j: usize) -> &Module {
         self.matrix.get(i, j)
@@ -30,6 +37,24 @@ impl QrCode {
     /// Get the version.
     pub fn version(&self) -> Version {
         self.version
+    }
+
+    /// Render the QR code into an ASCII representation that uses the "Full block" unicode character
+    /// (U+2588, UTF-8: E2 96 88) and empty spaces for the dark and light modules respectively.
+    pub fn render_ascii<W: std::fmt::Write>(&self, sink: &mut W) -> std::fmt::Result {
+        writeln!(sink, "{}", "██".repeat(self.size() + 2))?;
+        for i in 0..self.size() {
+            write!(sink, "██")?;
+            for j in 0..self.size() {
+                let output = match self.get(i, j) {
+                    Module::Light => "██",
+                    Module::Dark => "  ",
+                };
+                write!(sink, "{}", output)?;
+            }
+            writeln!(sink, "██")?;
+        }
+        writeln!(sink, "{}", "██".repeat(self.size() + 2))
     }
 }
 

@@ -23,11 +23,11 @@ impl From<bool> for Module {
     }
 }
 
-impl Into<bool> for Module {
-    fn into(self) -> bool {
-        match self {
-            Self::Dark => true,
-            Self::Light => false,
+impl From<Module> for bool {
+    fn from(value: Module) -> Self {
+        match value {
+            Module::Dark => true,
+            Module::Light => false,
         }
     }
 }
@@ -66,13 +66,13 @@ impl Matrix {
         &mut self.modules[index]
     }
 
-    /// Toggle elements of the matrix based on the passed `rule`. It is passed the indices `(i, j)`
+    /// Toggle elements of the matrix based on the passed `toggle`. It is passed the indices `(i, j)`
     /// of each module and it must return `true` if the module at that position should be toggled,
     /// `false` otherwise.
-    pub fn toggle_with<F: Fn(usize, usize) -> bool>(&mut self, rule: F) {
+    pub fn toggle_with<F: Fn(usize, usize) -> bool>(&mut self, toggle: F) {
         for i in 0..self.size {
             for j in 0..self.size {
-                if rule(i, j) {
+                if toggle(i, j) {
                     self.get_mut(i, j).toggle();
                 }
             }
@@ -91,6 +91,12 @@ impl std::ops::Index<(usize, usize)> for Matrix {
 impl std::ops::IndexMut<(usize, usize)> for Matrix {
     fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
         self.get_mut(index.0, index.1)
+    }
+}
+
+impl Default for Matrix {
+    fn default() -> Self {
+        Self::new(0)
     }
 }
 
@@ -209,7 +215,7 @@ mod test {
     fn index_seq_at_vertical_boundaries() {
         let mut seq = IndexSequenceIter::new(21);
         // Advance until we reach the top
-        assert_eq!(seq.find(|(i, j)| *i == 0), Some((0, 20)));
+        assert_eq!(seq.find(|(i, _)| *i == 0), Some((0, 20)));
         assert_eq!(seq.next(), Some((0, 19)));
         // Should now move to the next column pair that flows downwards
         assert_eq!(seq.next(), Some((0, 18)));
@@ -217,7 +223,7 @@ mod test {
         assert_eq!(seq.next(), Some((1, 18)));
         assert_eq!(seq.next(), Some((1, 17)));
         // Advance until the bottom
-        assert_eq!(seq.find(|(i, j)| *i == 20), Some((20, 18)));
+        assert_eq!(seq.find(|(i, _)| *i == 20), Some((20, 18)));
         assert_eq!(seq.next(), Some((20, 17)));
         assert_eq!(seq.next(), Some((20, 16)));
         assert_eq!(seq.next(), Some((20, 15)));
@@ -228,7 +234,7 @@ mod test {
     fn index_seq_at_left_boundary() {
         let mut seq = IndexSequenceIter::new(21);
         // Advance until we reach the left
-        assert_eq!(seq.find(|(i, j)| *j == 0), Some((20, 0)));
+        assert_eq!(seq.find(|(_, j)| *j == 0), Some((20, 0)));
         assert_eq!(seq.next(), Some((19, 0)));
         assert_eq!(seq.next(), Some((18, 0)));
         assert_eq!(seq.next(), Some((17, 0)));

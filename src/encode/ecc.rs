@@ -47,7 +47,6 @@ impl ReedSolomonEncoder {
         let encoder = RsEncoder::new(self.num_ecc_codewords_per_block());
         let mut blocks = Vec::with_capacity(self.num_blocks());
         for i in 0..self.num_blocks() {
-            println!("Block {i}");
             let range_start = i * self.num_data_codewords_per_block();
             let range_end = range_start + self.num_data_codewords_per_block();
             let data = &codewords[range_start..range_end];
@@ -76,14 +75,16 @@ mod test {
 
     #[test]
     fn ecc_generation() {
-        let settings = Settings::new(Version::V1, Ecl::L);
+        let settings = Settings::new(Version::V1, Ecl::M);
         let ecc = ReedSolomonEncoder::new(settings.clone());
         let blocks = ecc
             .encode(codewords("eren yeager", settings.clone()))
             .unwrap();
+        // 1M codes have a single block
+        assert_eq!(blocks.len(), 1);
         assert_eq!(
-            blocks.len(),
-            properties::num_ecc_blocks(settings.version, settings.ecl)
+            &blocks[0].ecc,
+            &vec![0xAE, 0xA5, 0x16, 0x17, 0xA0, 0x1E, 0x57, 0xD1, 0x51, 0x91]
         );
     }
 }

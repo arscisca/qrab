@@ -2,10 +2,11 @@ use bitvec::prelude::*;
 
 use super::{
     segment::{Segment, SegmentKind},
-    EncodingError,
+    Builder, EncodingError,
 };
 use crate::encode::ecc::ReedSolomonEncoder;
 use crate::{qrcode::properties, Ecl, QrCode, Version};
+use bitvec::macros::internal::funty::Fundamental;
 use std::ops::BitXorAssign;
 
 /// Encoding constraint that determines what to prioritize when encoding the QR symbol.
@@ -44,22 +45,6 @@ impl std::fmt::Debug for Settings {
 /// # Examples
 /// ## Basic usage
 /// By default, an `Encoder` will generate the smallest QR code possible to fit the provided data.
-/// ```rust
-/// use qrab::Encoder;
-/// let data = "Hello, world!".as_bytes();
-/// let qr = Encoder::new()
-///     .encode(data)
-///     .unwrap();
-/// ```
-/// ### With custom constraints
-/// It is also possible to specify other constraints for the QR code generation:
-/// ```rust
-/// use qrab::{Encoder, Constraint, Ecl};
-/// let data = "Cogito ergo sum".as_bytes();
-/// let qr = Encoder::with_constraint(Constraint::Ecl(Ecl::L))
-///     .encode(data)
-///     .unwrap();
-/// ```
 pub struct Encoder {
     constraint: Constraint,
 }
@@ -113,7 +98,8 @@ impl Encoder {
     }
 
     fn validate_settings(data: &[u8], settings: Settings) -> Result<Settings, EncodingError> {
-        if data.len() > 15 {
+        // TODO: This should depend on the codewords -not raw data- length, since compression will happen.
+        if data.len() > properties::num_data_bits(settings.version, settings.ecl) / 8 {
             return Err(EncodingError::DataTooLarge {
                 version: settings.version,
                 ecl: settings.ecl,
@@ -123,9 +109,6 @@ impl Encoder {
             return Err(EncodingError::NotSupported(
                 "Versions different from 1".into(),
             ));
-        }
-        if settings.ecl != Ecl::L {
-            return Err(EncodingError::NotSupported("ECL different from L".into()));
         }
         Ok(settings)
     }
@@ -147,24 +130,28 @@ impl ConstrainedEncoder {
         Self { settings }
     }
 
-    /// Get the encoder version.
-    pub fn version(&self) -> Version {
-        self.settings.version
-    }
-
-    ///  Get the encoder error correction level.
-    pub fn ecl(&self) -> Ecl {
-        self.settings.ecl
-    }
-
     /// Encode the associated data into the QR code.
     pub fn encode(self, segments: Vec<Segment>) -> Result<QrCode, EncodingError> {
         let settings = self.settings.clone();
         // Generate codewords
         let codewords = self.encode_segments(segments)?;
         // Add ECC encoding
-        let with_ecc = ReedSolomonEncoder::new(settings).encode(codewords);
-        todo!("Ecc generation")
+        let blocks = ReedSolomonEncoder::new(settings.clone()).encode(codewords)?;
+        // Reorder
+        let mut reordered = Vec::with_capacity(properties::num_codewords(settings.version));
+        for i in 0..blocks[0].data.len() {
+            for block in &blocks {
+                reordered.push(block.data[i])
+            }
+        }
+        for i in 0..blocks[0].ecc.len() {
+            for block in &blocks {
+                reordered.push(block.ecc[i])
+            }
+        }
+        // Build code
+        let qrcode = Builder::new(settings).build(reordered)?;
+        Ok(qrcode)
     }
 
     pub(crate) fn encode_segments(
@@ -229,6 +216,17 @@ impl SegmentEncoder {
         properties::num_data_bits(self.settings.version, self.settings.ecl)
     }
 
+    // Debug function
+    // TODO: Remove this
+    fn print_bits(&self, msg: &str) {
+        print!("{}: ", msg);
+        self.bits
+            .iter()
+            .inspect(|b| print!("{}", b.as_u8()))
+            .all(|_| true);
+        println!();
+    }
+
     fn append_segment_header(&mut self, segment: &Segment) {
         // Determine segment kind code
         // Determine segment length
@@ -247,7 +245,7 @@ impl SegmentEncoder {
             "Length of character count indicator depends on version"
         );
         let len_bits = len.view_bits::<Msb0>();
-        let len_bits_view_start = len_bits.len() - 10;
+        let len_bits_view_start = len_bits.len() - 8;
         let len_bits_view_end = len_bits.len();
         self.bits
             .extend_from_bitslice(&len_bits[len_bits_view_start..len_bits_view_end]);
@@ -294,16 +292,43 @@ mod test {
         let mut e = SegmentEncoder::new(Settings::new(Version::V1, Ecl::L));
         // Encoding bytes does not change the bytes themselves
         e.encode_append_bytes(data).unwrap();
-        assert_eq!(&e.bits.into_vec(), data);
+        assert_eq!(
+            e.bits,
+            bits![
+                0, 1, 1, 0, 1, 0, 0, 0, // h
+                0, 1, 1, 0, 0, 1, 0, 1, // e
+                0, 1, 1, 0, 1, 1, 0, 0, // l
+                0, 1, 1, 0, 1, 1, 0, 0, // l
+                0, 1, 1, 0, 1, 1, 1, 1, // o
+            ]
+        );
     }
 
     #[test]
     fn bytes_header() {
-        let data = "mononoke".as_bytes();
+        let data = "doggo".as_bytes();
         let s = Segment::new(data, 0..data.len(), SegmentKind::Bytes);
         let mut e = SegmentEncoder::new(Settings::new(Version::V1, Ecl::L));
         e.append_segment_header(&s);
-        // ---------------------[ HEADER ... | CHARACTER COUNT ............]
-        assert_eq!(e.bits, bits![0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0])
+        // ---------------------[.HEADER...|.CHARACTER COUNT.............]
+        assert_eq!(e.bits, bits![0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1])
+    }
+
+    #[test]
+    fn bytes_full() {
+        let data = "hello".as_bytes();
+        let settings = Settings::new(Version::V1, Ecl::M);
+        let mut enc = ConstrainedEncoder::new(settings);
+        let codewords = enc
+            .encode_segments(vec![Segment::new(data, 0..data.len(), SegmentKind::Bytes)])
+            .unwrap()
+            .0;
+        assert_eq!(
+            &codewords,
+            &vec![
+                0x40, 0x56, 0x86, 0x56, 0xC6, 0xC6, 0xF0, 0xEC, 0x11, 0xEC, 0x11, 0xEC, 0x11, 0xEC,
+                0x11, 0xEC
+            ]
+        );
     }
 }
