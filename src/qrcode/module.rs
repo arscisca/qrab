@@ -184,7 +184,9 @@ mod test {
         assert_eq!(m, Module::Dark);
     }
 
+
     #[test]
+    #[allow(clippy::bool_assert_comparison)]
     fn bool_conversions() {
         // Conversions are as expected
         assert_eq!(Module::from(false), Module::Light);

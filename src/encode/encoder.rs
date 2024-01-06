@@ -6,7 +6,6 @@ use super::{
 };
 use crate::encode::ecc::ReedSolomonEncoder;
 use crate::{qrcode::properties, Ecl, QrCode, Version};
-use bitvec::macros::internal::funty::Fundamental;
 use std::ops::BitXorAssign;
 
 /// Encoding constraint that determines what to prioritize when encoding the QR symbol.
@@ -216,17 +215,6 @@ impl SegmentEncoder {
         properties::num_data_bits(self.settings.version, self.settings.ecl)
     }
 
-    // Debug function
-    // TODO: Remove this
-    fn print_bits(&self, msg: &str) {
-        print!("{}: ", msg);
-        self.bits
-            .iter()
-            .inspect(|b| print!("{}", b.as_u8()))
-            .all(|_| true);
-        println!();
-    }
-
     fn append_segment_header(&mut self, segment: &Segment) {
         // Determine segment kind code
         // Determine segment length
@@ -318,7 +306,7 @@ mod test {
     fn bytes_full() {
         let data = "hello".as_bytes();
         let settings = Settings::new(Version::V1, Ecl::M);
-        let mut enc = ConstrainedEncoder::new(settings);
+        let enc = ConstrainedEncoder::new(settings);
         let codewords = enc
             .encode_segments(vec![Segment::new(data, 0..data.len(), SegmentKind::Bytes)])
             .unwrap()

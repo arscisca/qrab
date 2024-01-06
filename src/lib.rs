@@ -4,7 +4,7 @@ mod qrcode;
 pub use qrcode::{
     ecl::Ecl,
     module::Module,
-    qrcode::QrCode,
+    code::QrCode,
     version::{InvalidVersionNumber, Version},
 };
 

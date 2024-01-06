@@ -64,7 +64,7 @@ impl ReedSolomonEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{encode::encoder::ConstrainedEncoder, qrcode::properties, Ecl, Encoder, Version};
+    use crate::{encode::encoder::ConstrainedEncoder, Ecl, Encoder, Version};
 
     fn codewords(data: &str, settings: Settings) -> Codewords {
         let constrained = ConstrainedEncoder::new(settings);

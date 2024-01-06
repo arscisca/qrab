@@ -49,25 +49,6 @@ impl Builder {
         ))
     }
 
-    // Function to support debugging
-    // TODO: Remove this.
-    #[cfg(test)]
-    pub fn print_reserved(&self) {
-        println!("{}", "██".repeat(self.size + 2));
-        for i in 0..self.size {
-            print!("██");
-            for j in 0..self.size {
-                let output = match self.is_reserved(i, j) {
-                    true => "##",
-                    false => "  ",
-                };
-                print!("{}", output);
-            }
-            println!("██");
-        }
-        println!("{}", "██".repeat(self.size + 2))
-    }
-
     fn place_codewords(&mut self, codewords: Vec<u8>) -> Result<(), BuildingError> {
         // Create a temporary matrix to prevent `self` borrowing issues
         let mut m = std::mem::take(&mut self.matrix);
@@ -111,11 +92,8 @@ impl Builder {
         }
         // Format information (includes the always dark module)
         const FINFO_OFFSET: usize = LOCATOR_TOT_SIZE;
-        if j == FINFO_OFFSET && (i <= 7 || i >= edge - 7) {
-            // Vertical column
-            return true;
-        } else if i == FINFO_OFFSET && (j <= 8 || j >= edge - 7) {
-            // Horizontal row
+        if (j == FINFO_OFFSET && (i <= 7 || i >= edge - 7)) ||
+            (i == FINFO_OFFSET && (j <= 8 || j >= edge - 7)) {
             return true;
         }
         if self.settings.version >= crate::Version::V7 {
@@ -218,8 +196,7 @@ impl Builder {
             p => unreachable!("invalid functional pattern {:b}", p),
         };
         let pattern: u16 = (code << 10) | ecc;
-        let masked = pattern ^ MASK;
-        masked
+        pattern ^ MASK
     }
 
     fn draw_format_info(&mut self, pattern: u16) {

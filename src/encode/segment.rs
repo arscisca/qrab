@@ -40,7 +40,7 @@ impl<'a> Segment<'a> {
 
     /// Return the slice of data belonging to the segment.
     pub fn data(&self) -> &[u8] {
-        &self.data.as_ref()[self.range.clone()]
+        &self.data[self.range.clone()]
     }
 
     /// Get the `SegmentKind`.
@@ -86,7 +86,7 @@ impl<'a> std::fmt::Debug for Segment<'a> {
             "{:?}[{:?}]({:?})",
             self.kind,
             self.range,
-            self.data.as_ref()
+            self.data
         )
     }
 }
