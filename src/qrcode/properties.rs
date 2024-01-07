@@ -1,4 +1,22 @@
-use crate::{Ecl, Version};
+use itertools::Itertools;
+
+use crate::{Ecl, Version, encode::segment::SegmentKind};
+
+/// Get the number of bits of the segment character count indicator based on the `segment_kind` and `version`.
+pub fn char_count_len(version: Version, segment_kind: SegmentKind) -> usize {
+    let table = match segment_kind {
+        SegmentKind::Bytes => [8, 16, 16],
+        SegmentKind::Alphanumeric => [9, 11, 13],
+        SegmentKind::Numeric => [10, 12, 14]
+    };
+    let group = match version.number() {
+        1..=9 => 0,
+        10..=26 => 1,
+        27..=40 => 2,
+        v => unreachable!("unexpected version number: {}", v),
+    };
+    table[group]
+}
 
 /// Get the total number of codewords (including data and ECC) for a given `version`.
 #[rustfmt::skip]
@@ -115,4 +133,71 @@ pub fn num_ecc_codewords_per_block(version: Version, ecl: Ecl) -> usize {
 /// Get the size of a QR code symbol given its `version`, as in the length of its side.
 pub fn symbol_size(version: Version) -> usize {
     version.number() as usize * 4 + 17
+}
+
+/// Get a list of alignment pattern top-left corner coordinates for a given `version`.
+pub fn alignment_pattern_coordinates(version: Version) -> impl Iterator<Item=(usize, usize)> {
+    // Use version number to handle ranges and calculations easier
+    let pivots: &[usize] = match version {
+        Version::V1 => &[],
+        Version::V2 => &[6, 18],
+        Version::V3 => &[6, 22],
+        Version::V4 => &[6, 26],
+        Version::V5 => &[6, 30],
+        Version::V6 => &[6, 34],
+        Version::V7 => &[6, 22, 38],
+        Version::V8 => &[6, 24, 42],
+        Version::V9 => &[6, 26, 46],
+        Version::V10 => &[6, 28, 50],
+        Version::V11 => &[6, 30, 54],
+        Version::V12 => &[6, 32, 58],
+        Version::V13 => &[6, 34, 62],
+        Version::V14 => &[6, 26, 46, 66],
+        Version::V15 => &[6, 26, 48, 70],
+        Version::V16 => &[6, 26, 50, 74],
+        Version::V17 => &[6, 30, 54, 78],
+        Version::V18 => &[6, 30, 56, 82],
+        Version::V19 => &[6, 30, 58, 86],
+        Version::V20 => &[6, 34, 62, 90],
+        Version::V21 => &[6, 28, 50, 72, 94],
+        Version::V22 => &[6, 26, 50, 74, 98],
+        Version::V23 => &[6, 30, 54, 78, 102],
+        Version::V24 => &[6, 28, 54, 80, 106],
+        Version::V25 => &[6, 32, 58, 84, 110],
+        Version::V26 => &[6, 30, 58, 86, 114],
+        Version::V27 => &[6, 34, 62, 90, 118],
+        Version::V28 => &[6, 26, 50, 74, 98, 122],
+        Version::V29 => &[6, 30, 54, 78, 102, 126],
+        Version::V30 => &[6, 26, 52, 78, 104, 130],
+        Version::V31 => &[6, 30, 56, 82, 108, 134],
+        Version::V32 => &[6, 34, 60, 86, 112, 138],
+        Version::V33 => &[6, 30, 58, 86, 114, 142],
+        Version::V34 => &[6, 34, 62, 90, 118, 146],
+        Version::V35 => &[6, 30, 54, 78, 102, 126, 150],
+        Version::V36 => &[6, 24, 50, 76, 102, 128, 154],
+        Version::V37 => &[6, 28, 54, 80, 106, 132, 158],
+        Version::V38 => &[6, 32, 58, 84, 110, 136, 162],
+        Version::V39 => &[6, 26, 54, 82, 110, 138, 166],
+        Version::V40 => &[6, 30, 58, 86, 114, 142, 170],
+    };
+    // Actual alignment pattern coordinates are the cartesian product of the pivot list with itself
+    let i1 = pivots.iter().cloned();
+    let i2 = pivots.iter().cloned();
+    let product = i1.cartesian_product(i2);
+    // Filter to avoid alignment patterns that fall inside locator patterns
+    let size = symbol_size(version);
+    const LOCATOR_TOT_SIZE: usize = 8;
+    const ALIGN_SIZE: usize = 5;
+    product.filter_map(move |(i, j)| {
+        // Get the top-left corner coordinates
+        let (i, j) = (i - 2, j - 2);
+        let no_top_left_collision = i >= LOCATOR_TOT_SIZE || j >= LOCATOR_TOT_SIZE;
+        let no_top_right_collision = i >= LOCATOR_TOT_SIZE || j <= size - LOCATOR_TOT_SIZE - ALIGN_SIZE;
+        let no_bot_left_collision = i <= size - LOCATOR_TOT_SIZE - ALIGN_SIZE || j >= LOCATOR_TOT_SIZE;
+        if no_top_left_collision && no_top_right_collision && no_bot_left_collision {
+            Some((i, j))
+        } else {
+            None
+        }
+    })
 }

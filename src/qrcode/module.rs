@@ -6,11 +6,15 @@ pub enum Module {
 }
 
 impl Module {
-    pub fn toggle(&mut self) {
-        *self = match self {
+    pub const fn toggled(self) -> Self {
+        match self {
             Self::Dark => Self::Light,
             Self::Light => Self::Dark,
         }
+    }
+
+    pub fn toggle(&mut self) {
+        *self = self.toggled();
     }
 }
 
@@ -39,6 +43,9 @@ pub(crate) struct Matrix {
 }
 
 impl Matrix {
+    /// Color of the modules on a newly initialized Matrix.
+    pub const DEFAULT_MODULE_COLOR: Module = Module::Light;
+
     /// Linearize a 2D index `(i, j)` into a 1D index based on the matrix's size.
     fn linearized_index(&self, i: usize, j: usize) -> usize {
         i * self.size + j
@@ -46,7 +53,7 @@ impl Matrix {
 
     /// Construct a `Matrix` based on its `size`.
     pub fn new(size: usize) -> Self {
-        let modules = vec![Module::Light; size * size];
+        let modules = vec![Self::DEFAULT_MODULE_COLOR; size * size];
         Self { modules, size }
     }
 

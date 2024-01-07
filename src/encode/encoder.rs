@@ -104,11 +104,6 @@ impl Encoder {
                 ecl: settings.ecl,
             });
         }
-        if settings.version.number() != 1 {
-            return Err(EncodingError::NotSupported(
-                "Versions different from 1".into(),
-            ));
-        }
         Ok(settings)
     }
 }
@@ -227,13 +222,9 @@ impl SegmentEncoder {
         );
         self.bits.extend_from_bitslice(bits![0, 1, 0, 0]);
         // Character count indicator
-        assert_eq!(
-            self.settings.version.number(),
-            1,
-            "Length of character count indicator depends on version"
-        );
+        let char_count_len = properties::char_count_len(self.settings.version, segment.kind());
         let len_bits = len.view_bits::<Msb0>();
-        let len_bits_view_start = len_bits.len() - 8;
+        let len_bits_view_start = len_bits.len() - char_count_len;
         let len_bits_view_end = len_bits.len();
         self.bits
             .extend_from_bitslice(&len_bits[len_bits_view_start..len_bits_view_end]);
