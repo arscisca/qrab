@@ -1,5 +1,5 @@
-use crate::QrCode;
 use bitvec::prelude::*;
+use crate::{QrCode, Version};
 
 use super::encoder::Settings;
 use crate::qrcode::{
@@ -37,8 +37,9 @@ impl Builder {
         let format_info = Self::compute_format_info(self.settings.ecl, mask);
         self.draw_format_info(format_info);
         // Version information
-        if self.settings.version >= crate::Version::V7 {
-            todo!("Version information")
+        if self.settings.version >= Version::V7 {
+            let vinfo = Self::compute_version_info(self.settings.version);
+            self.draw_version_info(vinfo);
         }
         // Always dark module
         self.matrix[(4 * self.settings.version.number() as usize + 9, 8)] = Module::Dark;
@@ -87,8 +88,12 @@ impl Builder {
         mark_reserved_rect(self, 0, FINFO_OFFSET, 8, 1);
         mark_reserved_rect(self, edge - 7, FINFO_OFFSET, 8, 1);
 
-        if self.settings.version >= crate::Version::V7 {
-            todo!("Version information areas")
+        // Version information
+        if self.settings.version >= Version::V7 {
+            const VINFO_WIDTH: usize = 3;
+            const VINFO_HEIGHT: usize = 6;
+            mark_reserved_rect(self, 0, self.size() - LOCATOR_TOT_SIZE - VINFO_WIDTH, VINFO_HEIGHT, VINFO_WIDTH);
+            mark_reserved_rect(self, self.size() - LOCATOR_TOT_SIZE - VINFO_WIDTH, 0, VINFO_WIDTH, VINFO_HEIGHT);
         }
     }
 
@@ -226,6 +231,46 @@ impl Builder {
         pattern ^ MASK
     }
 
+    fn compute_version_info(version: Version) -> u32 {
+        match version {
+            Version::V7 => 0x07C94,
+            Version::V8 => 0x085BC,
+            Version::V9 => 0x09A99,
+            Version::V10 => 0x0A4D3,
+            Version::V11 => 0x0BBF6,
+            Version::V12 => 0x0C762,
+            Version::V13 => 0x0D847,
+            Version::V14 => 0x0E60D,
+            Version::V15 => 0x0F928,
+            Version::V16 => 0x10B78,
+            Version::V17 => 0x1145D,
+            Version::V18 => 0x12A17,
+            Version::V19 => 0x13532,
+            Version::V20 => 0x149A6,
+            Version::V21 => 0x15683,
+            Version::V22 => 0x168C9,
+            Version::V23 => 0x177EC,
+            Version::V24 => 0x18EC4,
+            Version::V25 => 0x191E1,
+            Version::V26 => 0x1AFAB,
+            Version::V27 => 0x1B08E,
+            Version::V28 => 0x1CC1A,
+            Version::V29 => 0x1D33F,
+            Version::V30 => 0x1ED75,
+            Version::V31 => 0x1F250,
+            Version::V32 => 0x209D5,
+            Version::V33 => 0x216F0,
+            Version::V34 => 0x228BA,
+            Version::V35 => 0x2379F,
+            Version::V36 => 0x24B0B,
+            Version::V37 => 0x2542E,
+            Version::V38 => 0x26A64,
+            Version::V39 => 0x27541,
+            Version::V40 => 0x28C69,
+            _ => 0x0,
+        }
+    }
+
     fn draw_format_info(&mut self, pattern: u16) {
         const FINFO_OFFSET: usize = 8;
         let edge = self.size() - 1;
@@ -250,6 +295,17 @@ impl Builder {
             let hor_offset = if k == 0 { 1 } else { 0 };
             let j_hor = 6 - k + hor_offset;
             self.matrix[(FINFO_OFFSET, j_hor)] = module;
+        }
+    }
+
+    fn draw_version_info(&mut self, vinfo: u32) {
+        let bits: &BitSlice<u32, Lsb0> = &vinfo.view_bits()[0..18];
+        let tr_base = (0, self.size() - 8 - 3);
+        let bl_base = (self.size() - 8 - 3, 0);
+        for (i, bit) in bits.iter().enumerate() {
+            let module = Module::from(*bit);
+            self.matrix[(tr_base.0 + i / 3, tr_base.1 + i % 3)] = module;
+            self.matrix[(bl_base.0 + i % 3, bl_base.1 + i / 3)] = module;
         }
     }
 }
