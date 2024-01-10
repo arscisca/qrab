@@ -1,7 +1,8 @@
 use super::{
-    ecl::Ecl,
-    module::{Matrix, Module},
     version::Version,
+    ecl::Ecl,
+    mask::Mask,
+    module::{Matrix, Module},
 };
 
 /// A QR code symbol.
@@ -9,14 +10,16 @@ pub struct QrCode {
     matrix: Matrix,
     version: Version,
     ecl: Ecl,
+    mask: Mask,
 }
 
 impl QrCode {
-    pub(crate) fn new(matrix: Matrix, version: Version, ecl: Ecl) -> Self {
+    pub(crate) fn new(matrix: Matrix, version: Version, ecl: Ecl, mask: Mask) -> Self {
         Self {
             matrix,
             version,
             ecl,
+            mask,
         }
     }
     /// Get the module at row `i` and column `j`.
@@ -34,9 +37,14 @@ impl QrCode {
         self.ecl
     }
 
-    /// Get the version.
+    /// Get the QR code version.
     pub fn version(&self) -> Version {
         self.version
+    }
+
+    /// Get the mask used in the QR code symbol.
+    pub fn mask(&self) -> Mask {
+        self.mask
     }
 
     /// Render the QR code into an ASCII representation that uses the "Full block" unicode character

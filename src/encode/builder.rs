@@ -1,12 +1,15 @@
 use bitvec::prelude::*;
-use crate::{QrCode, Version};
 
-use super::encoder::Settings;
-use crate::qrcode::{
-    ecl::Ecl,
-    module::{Matrix, Module},
-    properties, Mask,
+use super::{
+    QrCode,
+    Version,
+    Ecl,
+    qrcode::{
+        module::{Matrix, Module},
+        properties, Mask,
+    }
 };
+use super::Settings;
 
 pub(crate) struct Builder {
     settings: Settings,
@@ -42,11 +45,12 @@ impl Builder {
             self.draw_version_info(vinfo);
         }
         // Always dark module
-        self.matrix[(4 * self.settings.version.number() as usize + 9, 8)] = Module::Dark;
+        self.matrix.set(4 * self.settings.version.number() as usize + 9, 8, Module::Dark);
         Ok(QrCode::new(
             self.matrix,
             self.settings.version,
             self.settings.ecl,
+            mask
         ))
     }
 
@@ -111,7 +115,7 @@ impl Builder {
             let Some(index) = next_unreserved_index else {
                 break
             };
-            self.matrix[index] = Module::from(bit);
+            self.matrix.set(index.0, index.1, bit.into());
             placed += 1;
         }
         if placed != total {
@@ -136,7 +140,7 @@ impl Builder {
     fn fill_rect(&mut self, module: Module, i0: usize, j0: usize, height: usize, width: usize) {
         for i in i0..(i0 + height) {
             for j in j0..(j0 + width) {
-                self.matrix[(i, j)] = module;
+                self.matrix.set(i, j, module);
             }
         }
     }
@@ -169,7 +173,7 @@ impl Builder {
             // Outer, ring, center
             builder.fill_square(Module::Dark, i, j, 5);
             builder.fill_square(Module::Light, i + 1, j + 1, 3);
-            builder.matrix[(i + 2, j + 2)] = Module::Dark;
+            builder.matrix.set(i + 2, j + 2, Module::Dark);
         }
 
         for (i, j) in properties::alignment_pattern_coordinates(self.settings.version) {
@@ -180,9 +184,9 @@ impl Builder {
     fn draw_timing_patterns(&mut self) {
         let mut current = Module::Dark;
         for k in 8..(self.size() - 8) {
-            self.matrix[(6, k)] = current;
-            self.matrix[(k, 6)] = current;
-            current.toggle();
+            self.matrix.set(6, k, current);
+            self.matrix.set(k, 6, current);
+            current = current.toggled();
         }
     }
 
@@ -281,20 +285,20 @@ impl Builder {
             let module = Module::from(*bit);
             // Vertical line
             let ver_offset = if k <= 5 { 0 } else { 1 };
-            self.matrix[(k + ver_offset, FINFO_OFFSET)] = module;
+            self.matrix.set(k + ver_offset, FINFO_OFFSET, module);
             // Horizontal line
-            self.matrix[(FINFO_OFFSET, edge - k)] = module;
+            self.matrix.set(FINFO_OFFSET, edge - k, module);
         }
         // Draw remaining from the bottom and from the left
         for (k, bit) in bits[8..=14].iter().enumerate() {
             let module = Module::from(*bit);
             // Vertical line
             let i_ver = edge - 6 + k;
-            self.matrix[(i_ver, FINFO_OFFSET)] = module;
+            self.matrix.set(i_ver, FINFO_OFFSET, module);
             // Horizontal line
             let hor_offset = if k == 0 { 1 } else { 0 };
             let j_hor = 6 - k + hor_offset;
-            self.matrix[(FINFO_OFFSET, j_hor)] = module;
+            self.matrix.set(FINFO_OFFSET, j_hor, module);
         }
     }
 
@@ -304,8 +308,8 @@ impl Builder {
         let bl_base = (self.size() - 8 - 3, 0);
         for (i, bit) in bits.iter().enumerate() {
             let module = Module::from(*bit);
-            self.matrix[(tr_base.0 + i / 3, tr_base.1 + i % 3)] = module;
-            self.matrix[(bl_base.0 + i % 3, bl_base.1 + i / 3)] = module;
+            self.matrix.set(tr_base.0 + i / 3, tr_base.1 + i % 3, module);
+            self.matrix.set(bl_base.0 + i % 3, bl_base.1 + i / 3, module);
         }
     }
 }

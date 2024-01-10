@@ -1,11 +1,18 @@
 use bitvec::prelude::*;
 
 use super::{
+    Ecl,
+    QrCode,
+    Version,
+    Settings,
+    EncodingError,
     segment::{Segment, SegmentKind},
-    Builder, EncodingError,
+    ecc::ReedSolomonEncoder,
+    builder::Builder,
 };
-use crate::encode::ecc::ReedSolomonEncoder;
-use crate::{qrcode::properties, Ecl, QrCode, Version};
+
+use crate::qrcode::properties;
+
 use std::ops::BitXorAssign;
 
 /// Encoding constraint that determines what to prioritize when encoding the QR symbol.
@@ -20,26 +27,6 @@ pub enum Constraint {
     VersionAndEcl(Version, Ecl),
 }
 
-/// Settings for an encoder.
-#[derive(Clone)]
-pub(crate) struct Settings {
-    pub version: Version,
-    pub ecl: Ecl,
-}
-
-impl Settings {
-    /// Initialize with the specified `version` and `ecl`.
-    pub fn new(version: Version, ecl: Ecl) -> Self {
-        Self { version, ecl }
-    }
-}
-
-impl std::fmt::Debug for Settings {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}-{}", self.version, self.ecl)
-    }
-}
-
 /// A QR encoder with optional constraints on QR code error correction level and version.
 /// # Examples
 /// ## Basic usage
@@ -51,7 +38,7 @@ pub struct Encoder {
 impl Encoder {
     /// Create a new encoder with the default constraint that minimizes the output QR code's size.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_constraint(Constraint::SmallestSize)
     }
 
     /// Create a new encoder with a specific constraint.
@@ -110,7 +97,7 @@ impl Encoder {
 
 impl Default for Encoder {
     fn default() -> Self {
-        Self::with_constraint(Constraint::SmallestSize)
+        Self::new()
     }
 }
 
@@ -151,21 +138,13 @@ impl ConstrainedEncoder {
     pub(crate) fn encode_segments(
         self,
         segments: Vec<Segment>,
-    ) -> Result<Codewords, EncodingError> {
+    ) -> Result<Vec<u8>, EncodingError> {
         SegmentEncoder::new(self.settings).encode(segments)
     }
 }
 
 // SegmentEncoder ======================================================================================================
 type Bits = BitVec<u8, Msb0>;
-
-pub(crate) struct Codewords(Vec<u8>);
-impl From<Codewords> for Vec<u8> {
-    fn from(value: Codewords) -> Self {
-        value.0
-    }
-}
-
 /// Segment encoder to convert a stream of data segments into codewords.
 struct SegmentEncoder {
     settings: Settings,
@@ -175,13 +154,13 @@ struct SegmentEncoder {
 impl SegmentEncoder {
     pub fn new(settings: Settings) -> Self {
         Self {
-            bits: Bits::with_capacity(properties::num_data_bits(settings.version, settings.ecl)),
+            bits: Bits::with_capacity(properties::num_codewords(settings.version) * 8),
             settings,
         }
     }
 
     /// Encode the associated data.
-    pub fn encode(mut self, segments: Vec<Segment>) -> Result<Codewords, EncodingError> {
+    pub fn encode(mut self, segments: Vec<Segment>) -> Result<Vec<u8>, EncodingError> {
         // Encode each segment singularly
         for segment in segments {
             // Header section (segment kind and length)
@@ -202,7 +181,7 @@ impl SegmentEncoder {
         self.append_padding();
         // Collect codewords
         let codewords = self.bits.into_vec();
-        Ok(Codewords(codewords))
+        Ok(codewords)
     }
 
     /// Get the data capacity in bits.
@@ -300,8 +279,7 @@ mod test {
         let enc = ConstrainedEncoder::new(settings);
         let codewords = enc
             .encode_segments(vec![Segment::new(data, 0..data.len(), SegmentKind::Bytes)])
-            .unwrap()
-            .0;
+            .unwrap();
         assert_eq!(
             &codewords,
             &vec![

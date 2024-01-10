@@ -1,7 +1,5 @@
-use reed_solomon::Encoder as RsEncoder;
-
-use crate::encode::{
-    encoder::{Codewords, Settings},
+use super::{
+    Settings,
     EncodingError,
 };
 
@@ -40,11 +38,11 @@ impl ReedSolomonEncoder {
         self.num_codewords_per_block() - self.num_ecc_codewords_per_block()
     }
 
-    pub fn encode(self, codewords: Codewords) -> Result<Vec<Block>, EncodingError> {
+    pub fn encode(self, codewords: Vec<u8>) -> Result<Vec<Block>, EncodingError> {
         let codewords: Vec<u8> = codewords.into();
 
         // Encode each block
-        let encoder = RsEncoder::new(self.num_ecc_codewords_per_block());
+        let encoder = reed_solomon::Encoder::new(self.num_ecc_codewords_per_block());
         let mut blocks = Vec::with_capacity(self.num_blocks());
         for i in 0..self.num_blocks() {
             let range_start = i * self.num_data_codewords_per_block();
@@ -66,7 +64,7 @@ mod test {
     use super::*;
     use crate::{encode::encoder::ConstrainedEncoder, Ecl, Encoder, Version};
 
-    fn codewords(data: &str, settings: Settings) -> Codewords {
+    fn codewords(data: &str, settings: Settings) -> Vec<u8> {
         let constrained = ConstrainedEncoder::new(settings);
         constrained
             .encode_segments(Encoder::segment(data.as_bytes()))

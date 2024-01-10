@@ -1,3 +1,5 @@
+use bitvec::prelude as bv;
+
 /// A module of a QR code.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Module {
@@ -11,10 +13,6 @@ impl Module {
             Self::Dark => Self::Light,
             Self::Light => Self::Dark,
         }
-    }
-
-    pub fn toggle(&mut self) {
-        *self = self.toggled();
     }
 }
 
@@ -36,9 +34,18 @@ impl From<Module> for bool {
     }
 }
 
-/// Matrix of modules
+impl AsRef<Module> for bool {
+    fn as_ref(&self) -> &Module {
+        match self {
+            true => &Module::Dark,
+            false => &Module::Light,
+        }
+    }
+}
+
+/// Matrix of modules.
 pub(crate) struct Matrix {
-    modules: Vec<Module>,
+    modules: bv::BitVec,
     size: usize,
 }
 
@@ -53,7 +60,7 @@ impl Matrix {
 
     /// Construct a `Matrix` based on its `size`.
     pub fn new(size: usize) -> Self {
-        let modules = vec![Self::DEFAULT_MODULE_COLOR; size * size];
+        let modules = bv::BitVec::repeat(Self::DEFAULT_MODULE_COLOR.into(), size * size);
         Self { modules, size }
     }
 
@@ -62,15 +69,15 @@ impl Matrix {
         self.size
     }
 
-    /// Get the module at row `i` and column `j` where (0, 0) is the top-left corner.
+    /// Get the module at position `(i, j)` where `(0, 0)` is the top-left corner.
     pub fn get(&self, i: usize, j: usize) -> &Module {
-        &self.modules[self.linearized_index(i, j)]
+        (&self.modules[self.linearized_index(i, j)]).as_ref()
     }
 
-    /// Get the module at row `i` and column `j` where (0, 0) is the top-left corner.
-    pub fn get_mut(&mut self, i: usize, j: usize) -> &mut Module {
+    /// Set the module at position `(i, j)` to `value`.
+    pub fn set(&mut self, i: usize, j: usize, value: Module) {
         let index = self.linearized_index(i, j);
-        &mut self.modules[index]
+        self.modules.set(index, value.into());
     }
 
     /// Toggle elements of the matrix based on the passed `toggle`. It is passed the indices `(i, j)`
@@ -80,7 +87,9 @@ impl Matrix {
         for i in 0..self.size {
             for j in 0..self.size {
                 if toggle(i, j) {
-                    self.get_mut(i, j).toggle();
+                    let index = self.linearized_index(i, j);
+                    let toggled = !self.modules[index];
+                    self.modules.set(index, toggled);
                 }
             }
         }
@@ -92,12 +101,6 @@ impl std::ops::Index<(usize, usize)> for Matrix {
 
     fn index(&self, index: (usize, usize)) -> &Self::Output {
         self.get(index.0, index.1)
-    }
-}
-
-impl std::ops::IndexMut<(usize, usize)> for Matrix {
-    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
-        self.get_mut(index.0, index.1)
     }
 }
 
@@ -185,9 +188,9 @@ mod test {
     #[test]
     fn toggle() {
         let mut m = Module::Dark;
-        m.toggle();
+        m = m.toggled();
         assert_eq!(m, Module::Light);
-        m.toggle();
+        m = m.toggled();
         assert_eq!(m, Module::Dark);
     }
 
