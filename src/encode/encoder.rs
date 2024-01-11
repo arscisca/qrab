@@ -44,14 +44,10 @@ impl Encoder {
             Version::try_from((v1.number() + v2.number()) / 2).unwrap()
         }
         // Compute the encoding length in bits given the version and ecl
-        let can_encode_with = |version, ecl| {
-            let encoding_len: usize = segments
+        let encoding_len = |version| segments
                 .iter()
                 .map(|s| s.predicted_encoding_len(version))
-                .sum();
-            let available = properties::num_data_bits(version, ecl);
-            encoding_len <= available
-        };
+                .sum::<usize>();
         // Generate ranges for version and ecl
         let (mut vmin, mut vmax) = self
             .constraints
@@ -60,9 +56,9 @@ impl Encoder {
         let (emin, emax) = self.constraints.ecl().extremes_or_defaults(Ecl::L, Ecl::H);
 
         // Binary search the most conservative version and ecl pair based on constraints
-        let (mut v, mut e) = (version_midpoint(vmin, vmax), emin);
+        let mut v = version_midpoint(vmin, vmax);
         let chosen_version = loop {
-            if can_encode_with(v, e) {
+            if encoding_len(v) <= properties::num_data_bits(v, emin) {
                 // This combination works, check if version can be any smaller
                 if v > vmin && v < vmax {
                     vmax = v;
@@ -87,11 +83,14 @@ impl Encoder {
             v = if v_next != v { v_next } else { vmax };
         };
         // Now pick the highest possible ECL given the chosen version
-        let mut last_valid_ecl = emin;
-        while e < emax {
-            last_valid_ecl = e;
-            e = e.next();
-            if !can_encode_with(chosen_version, e) {
+        let encoding_len = encoding_len(chosen_version);
+        let mut ecl = emin;
+        let mut last_valid_ecl;
+        while ecl < emax {
+            last_valid_ecl = ecl;
+            ecl = ecl.next();
+            let available_space_with_ecl = properties::num_data_bits(chosen_version, ecl);
+            if available_space_with_ecl < encoding_len {
                 // The previous ecl was the limit
                 return Ok((chosen_version, last_valid_ecl));
             }
