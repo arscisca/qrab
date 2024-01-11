@@ -1,13 +1,13 @@
 use itertools::Itertools;
 
-use crate::{Ecl, Version, encode::segment::SegmentKind};
+use crate::{encode::segment::SegmentKind, Ecl, Version};
 
 /// Get the number of bits of the segment character count indicator based on the `segment_kind` and `version`.
 pub fn char_count_len(version: Version, segment_kind: SegmentKind) -> usize {
     let table = match segment_kind {
         SegmentKind::Bytes => [8, 16, 16],
         SegmentKind::Alphanumeric => [9, 11, 13],
-        SegmentKind::Numeric => [10, 12, 14]
+        SegmentKind::Numeric => [10, 12, 14],
     };
     let group = match version.number() {
         1..=9 => 0,
@@ -131,12 +131,12 @@ pub fn num_ecc_codewords_per_block(version: Version, ecl: Ecl) -> usize {
 }
 
 /// Get the size of a QR code symbol given its `version`, as in the length of its side.
-pub fn symbol_size(version: Version) -> usize {
+pub const fn symbol_size(version: Version) -> usize {
     version.number() as usize * 4 + 17
 }
 
 /// Get a list of alignment pattern top-left corner coordinates for a given `version`.
-pub fn alignment_pattern_coordinates(version: Version) -> impl Iterator<Item=(usize, usize)> {
+pub fn alignment_pattern_coordinates(version: Version) -> impl Iterator<Item = (usize, usize)> {
     // Use version number to handle ranges and calculations easier
     let pivots: &[usize] = match version {
         Version::V1 => &[],
@@ -192,8 +192,10 @@ pub fn alignment_pattern_coordinates(version: Version) -> impl Iterator<Item=(us
         // Get the top-left corner coordinates
         let (i, j) = (i - 2, j - 2);
         let no_top_left_collision = i >= LOCATOR_TOT_SIZE || j >= LOCATOR_TOT_SIZE;
-        let no_top_right_collision = i >= LOCATOR_TOT_SIZE || j <= size - LOCATOR_TOT_SIZE - ALIGN_SIZE;
-        let no_bot_left_collision = i <= size - LOCATOR_TOT_SIZE - ALIGN_SIZE || j >= LOCATOR_TOT_SIZE;
+        let no_top_right_collision =
+            i >= LOCATOR_TOT_SIZE || j <= size - LOCATOR_TOT_SIZE - ALIGN_SIZE;
+        let no_bot_left_collision =
+            i <= size - LOCATOR_TOT_SIZE - ALIGN_SIZE || j >= LOCATOR_TOT_SIZE;
         if no_top_left_collision && no_top_right_collision && no_bot_left_collision {
             Some((i, j))
         } else {

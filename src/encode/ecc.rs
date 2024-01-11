@@ -1,7 +1,4 @@
-use super::{
-    Settings,
-    EncodingError,
-};
+use super::{EncodingError, Settings};
 
 pub struct Block {
     pub data: Vec<u8>,
@@ -39,8 +36,6 @@ impl ReedSolomonEncoder {
     }
 
     pub fn encode(self, codewords: Vec<u8>) -> Result<Vec<Block>, EncodingError> {
-        let codewords: Vec<u8> = codewords.into();
-
         // Encode each block
         let encoder = reed_solomon::Encoder::new(self.num_ecc_codewords_per_block());
         let mut blocks = Vec::with_capacity(self.num_blocks());
@@ -62,12 +57,17 @@ impl ReedSolomonEncoder {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{encode::encoder::ConstrainedEncoder, Ecl, Encoder, Version};
+    use crate::encode::Constraint;
+    use crate::{encode::encoder::ConstrainedEncoder, Ecl, Encoder, EncodingConstraints, Version};
 
     fn codewords(data: &str, settings: Settings) -> Vec<u8> {
-        let constrained = ConstrainedEncoder::new(settings);
-        constrained
-            .encode_segments(Encoder::segment(data.as_bytes()))
+        let constraints = EncodingConstraints::new()
+            .with_version(Constraint::Exact(settings.version))
+            .with_ecl(Constraint::Exact(settings.ecl));
+        let encoder = Encoder::with_constraints(constraints);
+        let segments = encoder.segment(data.as_bytes());
+        ConstrainedEncoder::new(settings)
+            .encode_segments(segments)
             .unwrap()
     }
 

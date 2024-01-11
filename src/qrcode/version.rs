@@ -11,7 +11,8 @@ pub enum Version {
 }
 
 impl Version {
-    pub fn number(&self) -> u8 {
+    /// Get the version number as a `u8`.
+    pub const fn number(&self) -> u8 {
         *self as u8
     }
 }

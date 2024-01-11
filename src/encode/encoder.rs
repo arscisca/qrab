@@ -1,97 +1,109 @@
 use bitvec::prelude::*;
 
 use super::{
-    Ecl,
-    QrCode,
-    Version,
-    Settings,
-    EncodingError,
-    segment::{Segment, SegmentKind},
-    ecc::ReedSolomonEncoder,
     builder::Builder,
+    ecc::ReedSolomonEncoder,
+    segment::{Segment, SegmentKind},
+    Ecl, EncodingConstraints, EncodingError, QrCode, Settings, Version,
 };
 
 use crate::qrcode::properties;
-
-use std::ops::BitXorAssign;
-
-/// Encoding constraint that determines what to prioritize when encoding the QR symbol.
-pub enum Constraint {
-    /// Find the smallest size that fits the data, then the highest error correction level.
-    SmallestSize,
-    /// Use the specified version.
-    Version(Version),
-    /// Use the specified error correction level.
-    Ecl(Ecl),
-    /// Use the specified version and error correction level.
-    VersionAndEcl(Version, Ecl),
-}
 
 /// A QR encoder with optional constraints on QR code error correction level and version.
 /// # Examples
 /// ## Basic usage
 /// By default, an `Encoder` will generate the smallest QR code possible to fit the provided data.
 pub struct Encoder {
-    constraint: Constraint,
+    constraints: EncodingConstraints,
 }
 
 impl Encoder {
-    /// Create a new encoder with the default constraint that minimizes the output QR code's size.
+    /// Create a new encoder with no custom constraints.
     pub fn new() -> Self {
-        Self::with_constraint(Constraint::SmallestSize)
+        Self::with_constraints(EncodingConstraints::none())
     }
 
-    /// Create a new encoder with a specific constraint.
-    pub fn with_constraint(constraint: Constraint) -> Self {
-        Self { constraint }
+    /// Create a new encoder that uses the specified constraints.
+    pub fn with_constraints(constraints: EncodingConstraints) -> Self {
+        Self { constraints }
     }
 
     /// Encode `data`. It returns an error if the input data cannot be encoded with the given constraints - which could
     /// happen even with the default constraints e.g. when the data is just too big for any QR code.
     pub fn encode<T: AsRef<[u8]>>(self, data: T) -> Result<QrCode, EncodingError> {
         let data = data.as_ref();
-        let segments = Self::segment(data);
-        let constrained = self.resolve_constraints(data)?;
+        let segments = self.segment(data);
+        let (version, ecl) = self.resolve_constraints(&segments)?;
+        let constrained = ConstrainedEncoder::new(Settings::new(version, ecl));
         constrained.encode(segments)
     }
 
-    /// Resolve the constraints based on the passed `data` and its `segments`.
-    pub(crate) fn resolve_constraints(
-        self,
-        data: &[u8],
-    ) -> Result<ConstrainedEncoder, EncodingError> {
-        match self.constraint {
-            Constraint::SmallestSize => {
-                todo!("Automatic version and ecl")
+    fn resolve_constraints(&self, segments: &[Segment]) -> Result<(Version, Ecl), EncodingError> {
+        // Compute the midpoint between two version for binary searching
+        fn version_midpoint(v1: Version, v2: Version) -> Version {
+            Version::try_from((v1.number() + v2.number()) / 2).unwrap()
+        }
+        // Compute the encoding length in bits given the version and ecl
+        let can_encode_with = |version, ecl| {
+            let encoding_len: usize = segments
+                .iter()
+                .map(|s| s.predicted_encoding_len(version))
+                .sum();
+            let available = properties::num_data_bits(version, ecl);
+            encoding_len <= available
+        };
+        // Generate ranges for version and ecl
+        let (mut vmin, mut vmax) = self
+            .constraints
+            .version()
+            .extremes_or_defaults(Version::V1, Version::V40);
+        let (emin, emax) = self.constraints.ecl().extremes_or_defaults(Ecl::L, Ecl::H);
+
+        // Binary search the most conservative version and ecl pair based on constraints
+        let (mut v, mut e) = (version_midpoint(vmin, vmax), emin);
+        let chosen_version = loop {
+            if can_encode_with(v, e) {
+                // This combination works, check if version can be any smaller
+                if v > vmin && v < vmax {
+                    vmax = v;
+                } else {
+                    break v;
+                }
+            } else {
+                // This combination doesn't work, check if version can be any larger
+                if v < vmax {
+                    vmin = v;
+                } else {
+                    return Err(EncodingError::DataTooLong {
+                        ver_constr: self.constraints.version().clone(),
+                        ecl_constr: self.constraints.ecl().clone(),
+                    });
+                }
             }
-            Constraint::Version(version) => {
-                todo!("Automatic ecl")
-            }
-            Constraint::Ecl(ecl) => {
-                todo!("Automatic data")
-            }
-            Constraint::VersionAndEcl(version, ecl) => {
-                let settings = Self::validate_settings(data, Settings::new(version, ecl))?;
-                Ok(ConstrainedEncoder::new(settings))
+            // Update version for next iteration
+            let v_next = version_midpoint(vmin, vmax);
+            // When vmin - vmax == 1, the midpoint is vmin because of integer divisions, resulting in an infinite loop.
+            // Catch this condition which is recognizable when v is not changing anymore.
+            v = if v_next != v { v_next } else { vmax };
+        };
+        // Now pick the highest possible ECL given the chosen version
+        let mut last_valid_ecl = emin;
+        while e < emax {
+            last_valid_ecl = e;
+            e = e.next();
+            if !can_encode_with(chosen_version, e) {
+                // The previous ecl was the limit
+                return Ok((chosen_version, last_valid_ecl));
             }
         }
+        // All error correction levels were valid, return the highest
+        Ok((chosen_version, emax))
     }
 
-    pub(crate) fn segment(data: &[u8]) -> Vec<Segment> {
+    pub(crate) fn segment<'a>(&'a self, data: &'a [u8]) -> Vec<Segment<'a>> {
         // TODO: Actually analyze data to perform the best segmentation.
         let segment = Segment::new(data, 0..data.len(), SegmentKind::Bytes);
         vec![segment]
-    }
-
-    fn validate_settings(data: &[u8], settings: Settings) -> Result<Settings, EncodingError> {
-        // TODO: This should depend on the codewords -not raw data- length, since compression will happen.
-        if data.len() > properties::num_data_bits(settings.version, settings.ecl) / 8 {
-            return Err(EncodingError::DataTooLarge {
-                version: settings.version,
-                ecl: settings.ecl,
-            });
-        }
-        Ok(settings)
     }
 }
 
@@ -135,10 +147,7 @@ impl ConstrainedEncoder {
         Ok(qrcode)
     }
 
-    pub(crate) fn encode_segments(
-        self,
-        segments: Vec<Segment>,
-    ) -> Result<Vec<u8>, EncodingError> {
+    pub(crate) fn encode_segments(self, segments: Vec<Segment>) -> Result<Vec<u8>, EncodingError> {
         SegmentEncoder::new(self.settings).encode(segments)
     }
 }
@@ -233,7 +242,7 @@ impl SegmentEncoder {
         while self.data_capacity_bits() - self.bits.len() >= 8 {
             self.bits
                 .extend_from_bitslice(pad_codeword.view_bits::<Msb0>());
-            pad_codeword.bitxor_assign(PADDING_TOGGLE_MASK);
+            pad_codeword ^= PADDING_TOGGLE_MASK;
         }
         // Append 0s until capacity is reached
         self.bits.resize(self.data_capacity_bits(), false);
@@ -286,6 +295,27 @@ mod test {
                 0x40, 0x56, 0x86, 0x56, 0xC6, 0xC6, 0xF0, 0xEC, 0x11, 0xEC, 0x11, 0xEC, 0x11, 0xEC,
                 0x11, 0xEC
             ]
+        );
+    }
+
+    #[test]
+    fn no_constraints() {
+        // Try very short data with no constraints: this should result in a 1H code
+        let e = Encoder::new();
+        let segments = e.segment("short".as_ref());
+        assert_eq!(
+            e.resolve_constraints(&segments).unwrap(),
+            (Version::V1, Ecl::H)
+        );
+        // Try with data that should result in the largest QR. Leave some space for the encoding headers.
+        const SPACE_FOR_ENCODING_HEADERS: usize = 4;
+        let largest_data_size =
+            properties::num_data_codewords(Version::V40, Ecl::L) - SPACE_FOR_ENCODING_HEADERS;
+        let data = vec![0; largest_data_size];
+        let segments = e.segment(&data);
+        assert_eq!(
+            e.resolve_constraints(&segments).unwrap(),
+            (Version::V40, Ecl::L)
         );
     }
 }

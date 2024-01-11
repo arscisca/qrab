@@ -3,9 +3,10 @@ mod qrcode;
 
 pub use qrcode::{
     code::QrCode,
-    version::{Version, InvalidVersionNumber},
     ecl::Ecl,
+    mask::Mask,
     module::Module,
+    version::{InvalidVersionNumber, Version},
 };
 
-pub use encode::{Constraint, Encoder, EncodingError};
+pub use encode::{Constraint, Encoder, EncodingConstraints, EncodingError};

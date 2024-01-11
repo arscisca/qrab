@@ -71,7 +71,7 @@ impl Matrix {
 
     /// Get the module at position `(i, j)` where `(0, 0)` is the top-left corner.
     pub fn get(&self, i: usize, j: usize) -> &Module {
-        (&self.modules[self.linearized_index(i, j)]).as_ref()
+        self.modules[self.linearized_index(i, j)].as_ref()
     }
 
     /// Set the module at position `(i, j)` to `value`.
@@ -193,7 +193,6 @@ mod test {
         m = m.toggled();
         assert_eq!(m, Module::Dark);
     }
-
 
     #[test]
     #[allow(clippy::bool_assert_comparison)]

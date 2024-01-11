@@ -1,5 +1,5 @@
 /// Error correction level.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ecl {
     /// Low: 7% recovery rate.
     L,
@@ -18,6 +18,16 @@ impl Ecl {
             Self::M => 0b00,
             Self::Q => 0b11,
             Self::H => 0b10,
+        }
+    }
+
+    /// Get the next higher error correction level, saturating at `Ecl::H`.
+    pub(crate) fn next(&self) -> Self {
+        match self {
+            Self::L => Self::M,
+            Self::M => Self::Q,
+            Self::Q => Self::H,
+            Self::H => Self::H,
         }
     }
 }
