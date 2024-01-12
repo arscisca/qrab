@@ -1,6 +1,3 @@
-use crate::qrcode::properties;
-use crate::Version;
-
 /// The kind of a data segment.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SegmentKind {
@@ -61,17 +58,6 @@ impl<'a> Segment<'a> {
         self.range.len()
     }
 
-    /// Get a prediction of the number of bits of the segment once it will be encoded.
-    pub fn predicted_encoding_len(&self, version: Version) -> usize {
-        let d = self.data.len();
-        let header = 4 + properties::char_count_len(version, self.kind);
-        let data = match self.kind {
-            SegmentKind::Numeric => 10 * (d / 3) + [0, 4, 7][d % 3],
-            SegmentKind::Alphanumeric => 11 * (d / 2) + 6 * (d % 2),
-            SegmentKind::Bytes => 8 * d,
-        };
-        header + data
-    }
     /// Try to merge segments `s1` and `s2`. Merging can only happen if the two segments are
     /// contiguous (s1's range end is s2's range start) and if they share the same `SegmentKind`.
     /// If `s1` and `s2` cannot be merged, they will be returned unchanged in the `Err` variant

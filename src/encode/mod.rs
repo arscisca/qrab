@@ -285,26 +285,6 @@ pub enum EncodingError {
     BuildingError(#[from] builder::BuildingError),
 }
 
-/// Settings for an encoder.
-#[derive(Clone)]
-pub(crate) struct Settings {
-    pub version: Version,
-    pub ecl: Ecl,
-}
-
-impl Settings {
-    /// Initialize with the specified `version` and `ecl`.
-    pub fn new(version: Version, ecl: Ecl) -> Self {
-        Self { version, ecl }
-    }
-}
-
-impl std::fmt::Debug for Settings {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}-{}", self.version, self.ecl)
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -328,4 +308,3 @@ mod test {
         assert!(!c.accepts(&Ecl::M));
     }
 }
-

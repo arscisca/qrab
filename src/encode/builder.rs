@@ -1,29 +1,20 @@
 use bitvec::prelude::*;
 
-use super::{
-    QrCode,
-    Settings,
-    Version,
-    Ecl,
-    Module,
-    qrcode::{properties, module::Matrix},
-    Mask,
-};
+use super::{qrcode::module::Matrix, Ecl, Mask, Module, QrCode, QrInfo, Version};
 
-pub(crate) struct Builder {
-    settings: Settings,
+pub(crate) struct Builder<'i> {
+    info: &'i QrInfo,
     matrix: Matrix,
 }
 
-impl Builder {
+impl<'i> Builder<'i> {
     const RESERVED_MODULE: Module = Matrix::DEFAULT_MODULE_COLOR.toggled();
 
     /// Construct a new builder with the given `settings`.
-    pub fn new(settings: Settings) -> Self {
-        let size = properties::symbol_size(settings.version);
+    pub fn new(info: &'i QrInfo) -> Self {
         Self {
-            settings,
-            matrix: Matrix::new(size),
+            info,
+            matrix: Matrix::new(info.symbol_size()),
         }
     }
 
@@ -36,23 +27,23 @@ impl Builder {
         // Locator and timing patterns
         self.draw_patterns();
         // Format information
-        let format_info = Self::compute_format_info(self.settings.ecl, mask);
+        let format_info = Self::compute_format_info(self.info.ecl(), mask);
         self.draw_format_info(format_info);
         // Version information
-        if self.settings.version >= Version::V7 {
-            let vinfo = Self::compute_version_info(self.settings.version);
+        if self.info.version() >= Version::V7 {
+            let vinfo = Self::compute_version_info(self.info.version());
             self.draw_version_info(vinfo);
         }
         // Always dark module
         self.matrix.set(
-            4 * self.settings.version.number() as usize + 9,
+            4 * self.info.version().number() as usize + 9,
             8,
             Module::Dark,
         );
         Ok(QrCode::new(
             self.matrix,
-            self.settings.version,
-            self.settings.ecl,
+            self.info.version(),
+            self.info.ecl(),
             mask,
         ))
     }
@@ -102,7 +93,7 @@ impl Builder {
         );
 
         // Alignment patterns
-        for (i, j) in properties::alignment_pattern_coordinates(self.settings.version) {
+        for (i, j) in self.info.alignment_pattern_coordinates() {
             mark_reserved_rect(self, i, j, 5, 5);
         }
 
@@ -114,7 +105,7 @@ impl Builder {
         mark_reserved_rect(self, edge - 7, FINFO_OFFSET, 8, 1);
 
         // Version information
-        if self.settings.version >= Version::V7 {
+        if self.info.version() >= Version::V7 {
             const VINFO_WIDTH: usize = 3;
             const VINFO_HEIGHT: usize = 6;
             mark_reserved_rect(
@@ -210,7 +201,7 @@ impl Builder {
             builder.matrix.set(i + 2, j + 2, Module::Dark);
         }
 
-        for (i, j) in properties::alignment_pattern_coordinates(self.settings.version) {
+        for (i, j) in self.info.alignment_pattern_coordinates() {
             draw_alignment_pattern(self, i, j);
         }
     }

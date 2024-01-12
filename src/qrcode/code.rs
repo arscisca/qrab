@@ -1,8 +1,6 @@
 use super::{
-    ecl::Ecl,
-    mask::Mask,
+    info::{Ecl, Mask, Version},
     module::{Matrix, Module},
-    version::Version,
 };
 
 /// A QR code symbol.

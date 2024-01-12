@@ -1,17 +1,10 @@
 use bitvec::prelude::*;
 
 use super::{
-    Ecl,
-    QrCode,
-    Version,
-    Settings,
-    EncodingError,
-    EncodingConstraints,
-    segment::{Segment, SegmentKind},
     builder::Builder,
+    segment::{Segment, SegmentKind},
+    Ecl, EncodingConstraints, EncodingError, QrCode, QrInfo, Version,
 };
-
-use crate::qrcode::properties;
 
 /// A QR encoder with optional constraints on QR code error correction level and version.
 /// # Examples
@@ -37,21 +30,19 @@ impl Encoder {
     pub fn encode<T: AsRef<[u8]>>(self, data: T) -> Result<QrCode, EncodingError> {
         let data = data.as_ref();
         let segments = self.segment(data);
-        let (version, ecl) = self.resolve_constraints(&segments)?;
-        let constrained = ConstrainedEncoder::new(Settings::new(version, ecl));
-        constrained.encode(segments)
+        let info = self.resolve_constraints(&segments)?;
+        let codewords = SegmentEncoder::new(&info).encode(segments)?;
+        // Add ECC encoding
+        let encoded = EcEncoder::new(&info).encode(codewords);
+        let qrcode = Builder::new(&info).build(encoded)?;
+        Ok(qrcode)
     }
 
-    fn resolve_constraints(&self, segments: &[Segment]) -> Result<(Version, Ecl), EncodingError> {
+    fn resolve_constraints(&self, segments: &[Segment]) -> Result<QrInfo, EncodingError> {
         // Compute the midpoint between two version for binary searching
         fn version_midpoint(v1: Version, v2: Version) -> Version {
             Version::try_from((v1.number() + v2.number()) / 2).unwrap()
         }
-        // Compute the encoding length in bits given the version and ecl
-        let encoding_len = |version| segments
-                .iter()
-                .map(|s| s.predicted_encoding_len(version))
-                .sum::<usize>();
         // Generate ranges for version and ecl
         let (mut vmin, mut vmax) = self
             .constraints
@@ -60,19 +51,20 @@ impl Encoder {
         let (emin, emax) = self.constraints.ecl().extremes_or_defaults(Ecl::L, Ecl::H);
 
         // Binary search the most conservative version and ecl pair based on constraints
-        let mut v = version_midpoint(vmin, vmax);
-        let chosen_version = loop {
-            if encoding_len(v) <= properties::num_data_bits(v, emin) {
+        let mut info = QrInfo::new(version_midpoint(vmin, vmax), emin);
+        let encoding_len = loop {
+            let encoding_len = info.predict_encoding_len(segments.iter());
+            if encoding_len <= info.num_data_bits() {
                 // This combination works, check if version can be any smaller
-                if v > vmin && v < vmax {
-                    vmax = v;
+                if info.version() > vmin && info.version() < vmax {
+                    vmax = info.version();
                 } else {
-                    break v;
+                    break encoding_len;
                 }
             } else {
                 // This combination doesn't work, check if version can be any larger
-                if v < vmax {
-                    vmin = v;
+                if info.version() < vmax {
+                    vmin = info.version();
                 } else {
                     return Err(EncodingError::DataTooLong {
                         ver_constr: self.constraints.version().clone(),
@@ -81,26 +73,27 @@ impl Encoder {
                 }
             }
             // Update version for next iteration
-            let v_next = version_midpoint(vmin, vmax);
+            let vmid = version_midpoint(vmin, vmax);
             // When vmin - vmax == 1, the midpoint is vmin because of integer divisions, resulting in an infinite loop.
             // Catch this condition which is recognizable when v is not changing anymore.
-            v = if v_next != v { v_next } else { vmax };
+            let vnext = if vmid != info.version() { vmid } else { vmax };
+            info.set_version(vnext);
         };
         // Now pick the highest possible ECL given the chosen version
-        let encoding_len = encoding_len(chosen_version);
-        let mut ecl = emin;
+        info.set_ecl(emin);
         let mut last_valid_ecl;
-        while ecl < emax {
-            last_valid_ecl = ecl;
-            ecl = ecl.next();
-            let available_space_with_ecl = properties::num_data_bits(chosen_version, ecl);
+        while info.ecl() < emax {
+            last_valid_ecl = info.ecl();
+            info.set_ecl(info.ecl().next());
+            let available_space_with_ecl = info.num_data_bits();
             if available_space_with_ecl < encoding_len {
                 // The previous ecl was the limit
-                return Ok((chosen_version, last_valid_ecl));
+                info.set_ecl(last_valid_ecl);
+                return Ok(info);
             }
         }
-        // All error correction levels were valid, return the highest
-        Ok((chosen_version, emax))
+        // All error correction levels were valid
+        Ok(info)
     }
 
     pub(crate) fn segment<'a>(&'a self, data: &'a [u8]) -> Vec<Segment<'a>> {
@@ -116,45 +109,18 @@ impl Default for Encoder {
     }
 }
 
-/// An encoder with a defined version and error correction level.
-pub(crate) struct ConstrainedEncoder {
-    settings: Settings,
-}
-
-impl ConstrainedEncoder {
-    pub fn new(settings: Settings) -> Self {
-        Self { settings }
-    }
-
-    /// Encode the associated data into the QR code.
-    pub fn encode(self, segments: Vec<Segment>) -> Result<QrCode, EncodingError> {
-        let settings = self.settings.clone();
-        // Generate codewords
-        let codewords = self.encode_segments(segments)?;
-        // Add ECC encoding
-        let encoded = EcEncoder::new(&settings).encode(codewords);
-        let qrcode = Builder::new(settings).build(encoded)?;
-        Ok(qrcode)
-    }
-
-    pub(crate) fn encode_segments(self, segments: Vec<Segment>) -> Result<Vec<u8>, EncodingError> {
-        SegmentEncoder::new(self.settings).encode(segments)
-    }
-}
-
 // SegmentEncoder ======================================================================================================
-type Bits = BitVec<u8, Msb0>;
 /// Segment encoder to convert a stream of data segments into codewords.
-struct SegmentEncoder {
-    settings: Settings,
-    bits: Bits,
+struct SegmentEncoder<'i> {
+    info: &'i QrInfo,
+    bits: BitVec<u8, Msb0>,
 }
 
-impl SegmentEncoder {
-    pub fn new(settings: Settings) -> Self {
+impl<'i> SegmentEncoder<'i> {
+    pub fn new(info: &'i QrInfo) -> Self {
         Self {
-            bits: Bits::with_capacity(properties::num_codewords(settings.version) * 8),
-            settings,
+            info,
+            bits: BitVec::with_capacity(info.num_data_bits()),
         }
     }
 
@@ -173,7 +139,7 @@ impl SegmentEncoder {
             };
         }
         // If it fits, append end indicator
-        if self.data_capacity_bits() - self.bits.len() >= 4 {
+        if self.bits.capacity() - self.bits.len() >= 4 {
             self.bits.extend_from_bitslice(bits![0, 0, 0, 0]);
         }
         // Append padding
@@ -181,11 +147,6 @@ impl SegmentEncoder {
         // Collect codewords
         let codewords = self.bits.into_vec();
         Ok(codewords)
-    }
-
-    /// Get the data capacity in bits.
-    fn data_capacity_bits(&self) -> usize {
-        properties::num_data_bits(self.settings.version, self.settings.ecl)
     }
 
     fn append_segment_header(&mut self, segment: &Segment) {
@@ -200,7 +161,7 @@ impl SegmentEncoder {
         );
         self.bits.extend_from_bitslice(bits![0, 1, 0, 0]);
         // Character count indicator
-        let char_count_len = properties::char_count_len(self.settings.version, segment.kind());
+        let char_count_len = self.info.char_count_len(segment.kind());
         let len_bits = len.view_bits::<Msb0>();
         let len_bits_view_start = len_bits.len() - char_count_len;
         let len_bits_view_end = len_bits.len();
@@ -229,13 +190,13 @@ impl SegmentEncoder {
         // Append pad codewords until there is enough space for the end symbol
         let mut pad_codeword = 0b11101100u8;
         const PADDING_TOGGLE_MASK: u8 = 0b11111101u8;
-        while self.data_capacity_bits() - self.bits.len() >= 8 {
+        while self.bits.capacity() - self.bits.len() >= 8 {
             self.bits
                 .extend_from_bitslice(pad_codeword.view_bits::<Msb0>());
             pad_codeword ^= PADDING_TOGGLE_MASK;
         }
         // Append 0s until capacity is reached
-        self.bits.resize(self.data_capacity_bits(), false);
+        self.bits.resize(self.bits.capacity(), false);
     }
 }
 
@@ -249,15 +210,12 @@ pub struct EcEncoder {
 
 impl EcEncoder {
     /// Construct a new encoder with the specified version and ecl `settings`.
-    pub fn new(settings: &Settings) -> Self {
+    pub fn new(info: &QrInfo) -> Self {
         Self {
-            d_len: properties::num_data_codewords(settings.version, settings.ecl),
-            n_blocks: properties::num_ecc_blocks(settings.version, settings.ecl),
-            n_codewords: properties::num_codewords(settings.version),
-            n_ecc_per_block: properties::num_ecc_codewords_per_block(
-                settings.version,
-                settings.ecl,
-            ),
+            d_len: info.num_data_codewords(),
+            n_blocks: info.num_ecc_blocks(),
+            n_codewords: info.num_codewords(),
+            n_ecc_per_block: info.num_ecc_codewords_per_block(),
         }
     }
 
@@ -337,7 +295,8 @@ mod test {
     #[test]
     fn bytes_data_encoding() {
         let data = "hello".as_bytes();
-        let mut e = SegmentEncoder::new(Settings::new(Version::V1, Ecl::L));
+        let info = QrInfo::new(Version::V1, Ecl::L);
+        let mut e = SegmentEncoder::new(&info);
         // Encoding bytes does not change the bytes themselves
         e.encode_append_bytes(data).unwrap();
         assert_eq!(
@@ -355,20 +314,21 @@ mod test {
     #[test]
     fn bytes_header() {
         let data = "doggo".as_bytes();
+        let info = QrInfo::new(Version::V1, Ecl::L);
         let s = Segment::new(data, 0..data.len(), SegmentKind::Bytes);
-        let mut e = SegmentEncoder::new(Settings::new(Version::V1, Ecl::L));
+        let mut e = SegmentEncoder::new(&info);
         e.append_segment_header(&s);
-        // ---------------------[.HEADER...|.CHARACTER COUNT.............]
+        // ---------------------[.HEADER...|.CHARACTER COUNT.......]
         assert_eq!(e.bits, bits![0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1])
     }
 
     #[test]
     fn bytes_full() {
         let data = "hello".as_bytes();
-        let settings = Settings::new(Version::V1, Ecl::M);
-        let enc = ConstrainedEncoder::new(settings);
+        let info = QrInfo::new(Version::V1, Ecl::M);
+        let enc = SegmentEncoder::new(&info);
         let codewords = enc
-            .encode_segments(vec![Segment::new(data, 0..data.len(), SegmentKind::Bytes)])
+            .encode(vec![Segment::new(data, 0..data.len(), SegmentKind::Bytes)])
             .unwrap();
         assert_eq!(
             &codewords,
@@ -386,22 +346,22 @@ mod test {
         let segments = e.segment("short".as_ref());
         assert_eq!(
             e.resolve_constraints(&segments).unwrap(),
-            (Version::V1, Ecl::H)
+            QrInfo::new(Version::V1, Ecl::H)
         );
         // Try with data that should result in the largest QR. Leave some space for the encoding headers.
         const SPACE_FOR_ENCODING_HEADERS: usize = 4;
         let largest_data_size =
-            properties::num_data_codewords(Version::V40, Ecl::L) - SPACE_FOR_ENCODING_HEADERS;
+            QrInfo::new(Version::V40, Ecl::L).num_data_codewords() - SPACE_FOR_ENCODING_HEADERS;
         let data = vec![0; largest_data_size];
         let segments = e.segment(&data);
         assert_eq!(
             e.resolve_constraints(&segments).unwrap(),
-            (Version::V40, Ecl::L)
+            QrInfo::new(Version::V40, Ecl::L)
         );
     }
 
     fn ec_encode<T: Into<Vec<u8>>>(data: T, version: Version, ecl: Ecl) -> Vec<u8> {
-        let encoder = EcEncoder::new(&Settings::new(version, ecl));
+        let encoder = EcEncoder::new(&QrInfo::new(version, ecl));
         encoder.encode(data.into())
     }
 
