@@ -1,5 +1,4 @@
 pub(crate) mod builder;
-pub(crate) mod ecc;
 pub(crate) mod encoder;
 pub(crate) mod segment;
 
@@ -9,8 +8,8 @@ use crate::*;
 pub use encoder::Encoder;
 
 // Constraints =========================================================================================================
-/// Constraint over the possible values of a type. The `Constraint::Any` variant is the free constraint that accepts
-/// any value of `T`.
+/// Constraint over the possible values of `T`. The `Constraint::Any` variant is the free constraint
+/// that accepts any value of `T`.
 /// # Type conversions
 /// For convenience, `Constraint`s can be defined explicitly through the
 /// available variants, or from various compatible types that include values of `T` (mapped to a `Constraint::Exact(T)`)
@@ -329,3 +328,4 @@ mod test {
         assert!(!c.accepts(&Ecl::M));
     }
 }
+

@@ -1,10 +1,14 @@
 use bitvec::prelude::*;
 
 use super::{
-    builder::Builder,
-    ecc::ReedSolomonEncoder,
+    Ecl,
+    QrCode,
+    Version,
+    Settings,
+    EncodingError,
+    EncodingConstraints,
     segment::{Segment, SegmentKind},
-    Ecl, EncodingConstraints, EncodingError, QrCode, Settings, Version,
+    builder::Builder,
 };
 
 use crate::qrcode::properties;
@@ -128,21 +132,8 @@ impl ConstrainedEncoder {
         // Generate codewords
         let codewords = self.encode_segments(segments)?;
         // Add ECC encoding
-        let blocks = ReedSolomonEncoder::new(settings.clone()).encode(codewords)?;
-        // Reorder
-        let mut reordered = Vec::with_capacity(properties::num_codewords(settings.version));
-        for i in 0..blocks[0].data.len() {
-            for block in &blocks {
-                reordered.push(block.data[i])
-            }
-        }
-        for i in 0..blocks[0].ecc.len() {
-            for block in &blocks {
-                reordered.push(block.ecc[i])
-            }
-        }
-        // Build code
-        let qrcode = Builder::new(settings).build(reordered)?;
+        let encoded = EcEncoder::new(&settings).encode(codewords);
+        let qrcode = Builder::new(settings).build(encoded)?;
         Ok(qrcode)
     }
 
@@ -248,6 +239,97 @@ impl SegmentEncoder {
     }
 }
 
+// EcEncoder ===========================================================================================================
+pub struct EcEncoder {
+    d_len: usize,
+    n_blocks: usize,
+    n_codewords: usize,
+    n_ecc_per_block: usize,
+}
+
+impl EcEncoder {
+    /// Construct a new encoder with the specified version and ecl `settings`.
+    pub fn new(settings: &Settings) -> Self {
+        Self {
+            d_len: properties::num_data_codewords(settings.version, settings.ecl),
+            n_blocks: properties::num_ecc_blocks(settings.version, settings.ecl),
+            n_codewords: properties::num_codewords(settings.version),
+            n_ecc_per_block: properties::num_ecc_codewords_per_block(
+                settings.version,
+                settings.ecl,
+            ),
+        }
+    }
+
+    pub fn encode(self, data: Vec<u8>) -> Vec<u8> {
+        debug_assert_eq!(
+            data.len(),
+            self.d_len,
+            "Unexpected data length based on the version and ecl this encoder was constructed with"
+        );
+        // Prepare encoder
+        let encoder = reed_solomon::Encoder::new(self.n_ecc_per_block);
+        // Initialize result vector and divide it in its short, long and error correction ranges
+        let mut result = vec![0; self.n_codewords];
+        let (sresult, lresult, result_ec) = self.split_result_ranges(&mut result);
+        // Divide data in short and long blocks
+        let (sdata, ldata) = self.split_data_blocks(&data);
+        // Encode short blocks first
+        let mut block = 0;
+        let short_block_len = data.len() / self.n_blocks;
+        for data in sdata.chunks(short_block_len) {
+            let buffer = encoder.encode(data);
+            self.place_codewords(sresult, buffer.data(), block);
+            self.place_codewords(result_ec, buffer.ecc(), block);
+            block += 1;
+        }
+        // Encode long blocks
+        let long_block_len = short_block_len + 1;
+        for (i, data) in ldata.chunks(long_block_len).enumerate() {
+            let buffer = encoder.encode(data);
+            // The base part of the data is placed like short blocks
+            self.place_codewords(sresult, &buffer.data()[..short_block_len], block);
+            // The extra codeword goes in its own section
+            lresult[i] = *buffer
+                .data()
+                .last()
+                .expect("Data buffers should not be empty");
+            self.place_codewords(result_ec, buffer.ecc(), block);
+            block += 1;
+        }
+        result
+    }
+
+    fn place_codewords(&self, result: &mut [u8], codewords: &[u8], block: usize) {
+        for (i, codeword) in codewords.iter().enumerate() {
+            result[block + i * self.n_blocks] = *codeword;
+        }
+    }
+
+    fn split_data_blocks<'a>(&self, data: &'a [u8]) -> (&'a [u8], &'a [u8]) {
+        let short_block_len = data.len() / self.n_blocks;
+        let extra_codewords = data.len() % self.n_blocks;
+        // Extra codewords are placed one per each long block
+        let n_long_blocks = extra_codewords;
+        let n_short_blocks = self.n_blocks - n_long_blocks;
+        // Short blocks come first, then long blocks
+        let short_data_end = short_block_len * n_short_blocks;
+        data.split_at(short_data_end)
+    }
+
+    fn split_result_ranges<'a>(
+        &self,
+        result: &'a mut [u8],
+    ) -> (&'a mut [u8], &'a mut [u8], &'a mut [u8]) {
+        // Data and error correction split simply at the end of the data
+        let (data, ec) = result.split_at_mut(self.d_len);
+        // Data is then divided in short and long, where the long codewords come last
+        let sdata_len = self.n_blocks * (self.d_len / self.n_blocks);
+        let (sdata, ldata) = data.split_at_mut(sdata_len);
+        (sdata, ldata, ec)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -316,5 +398,25 @@ mod test {
             e.resolve_constraints(&segments).unwrap(),
             (Version::V40, Ecl::L)
         );
+    }
+
+    fn ec_encode<T: Into<Vec<u8>>>(data: T, version: Version, ecl: Ecl) -> Vec<u8> {
+        let encoder = EcEncoder::new(&Settings::new(version, ecl));
+        encoder.encode(data.into())
+    }
+
+    #[test]
+    fn ec_encoding() {
+        // Check simple encoding
+        let data = [
+            0x10, 0x20, 0x0c, 0x56, 0x61, 0x80, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11,
+            0xec, 0x11,
+        ];
+        let encoded = ec_encode(data, Version::V1, Ecl::M);
+        let expected = [
+            0x10, 0x20, 0x0c, 0x56, 0x61, 0x80, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11,
+            0xec, 0x11, 0xa5, 0x24, 0xd4, 0xc1, 0xed, 0x36, 0xc7, 0x87, 0x2c, 0x55,
+        ];
+        assert_eq!(encoded, expected);
     }
 }
