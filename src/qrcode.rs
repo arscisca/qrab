@@ -1,6 +1,91 @@
 use bitvec::prelude as bv;
 
-/// A module of a QR code.
+use super::{
+    Encoder,
+    EncodingConstraints,
+    EncodingError,
+    info::{Ecl, Mask, Version}
+};
+
+/// A QR valid code symbol.
+///
+/// # Storage
+/// Its modules (a.k.a. its pixels) are stored in a compacted form inside a row-major `Matrix`. The most efficient way
+/// to interact with them is
+pub struct QrCode {
+    matrix: Matrix,
+    version: Version,
+    ecl: Ecl,
+    mask: Mask,
+}
+
+impl QrCode {
+    pub(crate) fn new(matrix: Matrix, version: Version, ecl: Ecl, mask: Mask) -> Self {
+        Self {
+            matrix,
+            version,
+            ecl,
+            mask,
+        }
+    }
+
+    /// Generate a QR code by encoding `data`.
+    pub fn encode<T: AsRef<[u8]>>(data: T) -> Result<Self, EncodingError> {
+        let encoder = Encoder::default();
+        encoder.encode(data)
+    }
+
+    pub fn encode_constrained<T: AsRef<[u8]>>(
+        data: T,
+        constraints: EncodingConstraints,
+    ) -> Result<Self, EncodingError> {
+        let encoder = Encoder::with_constraints(constraints);
+        encoder.encode(data)
+    }
+
+    /// Get the module at row `i` and column `j`.
+    pub fn get(&self, i: usize, j: usize) -> &Module {
+        self.matrix.get(i, j)
+    }
+
+    /// Get the size of the QR code symbol.
+    pub fn size(&self) -> usize {
+        self.matrix.size()
+    }
+
+    /// Get the error correction level.
+    pub fn ecl(&self) -> Ecl {
+        self.ecl
+    }
+
+    /// Get the QR code version.
+    pub fn version(&self) -> Version {
+        self.version
+    }
+
+    /// Get the mask used in the QR code symbol.
+    pub fn mask(&self) -> Mask {
+        self.mask
+    }
+
+    /// Get an iterator over the rows of the QrCode.
+    pub fn rows(&self) -> Rows {
+        self.matrix.rows()
+    }
+}
+
+impl std::fmt::Debug for QrCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "<QR code version {:?}, ecl {:?}>",
+            self.version, self.ecl
+        )
+    }
+}
+
+// Module ==============================================================================================================
+/// Module of a QR code, a.k.a. one of its pixels.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Module {
     Dark,
@@ -43,7 +128,17 @@ impl AsRef<Module> for bool {
     }
 }
 
-/// Matrix of modules.
+impl AsRef<bool> for Module {
+    fn as_ref(&self) -> &bool {
+        match self {
+            Module::Dark => &true,
+            Module::Light => &true,
+        }
+    }
+}
+
+/// Editable row-major matrix of QR code modules that may or may not yet qualify as a valid QR code. It can be used to
+/// construct a QR code, to explore its modules and so on.
 pub(crate) struct Matrix {
     modules: bv::BitVec,
     size: usize,
@@ -53,15 +148,15 @@ impl Matrix {
     /// Color of the modules on a newly initialized Matrix.
     pub const DEFAULT_MODULE_COLOR: Module = Module::Light;
 
-    /// Linearize a 2D index `(i, j)` into a 1D index based on the matrix's size.
-    fn linearized_index(&self, i: usize, j: usize) -> usize {
-        i * self.size + j
-    }
-
     /// Construct a `Matrix` based on its `size`.
     pub fn new(size: usize) -> Self {
         let modules = bv::BitVec::repeat(Self::DEFAULT_MODULE_COLOR.into(), size * size);
         Self { modules, size }
+    }
+
+    /// Linearize a 2D index `(i, j)` into a 1D index based on the matrix's size.
+    fn linearized_index(&self, i: usize, j: usize) -> usize {
+        i * self.size + j
     }
 
     /// Get the size of the matrix.
@@ -69,7 +164,7 @@ impl Matrix {
         self.size
     }
 
-    /// Get the module at position `(i, j)` where `(0, 0)` is the top-left corner.
+    /// Get the module at position `(i, j)`.
     pub fn get(&self, i: usize, j: usize) -> &Module {
         self.modules[self.linearized_index(i, j)].as_ref()
     }
@@ -94,6 +189,18 @@ impl Matrix {
             }
         }
     }
+
+    /// Get an alias to the `i`th row of the matrix.
+    fn row(&self, i: usize) -> Row {
+        Row {
+            modules: &self.modules[(i * self.size)..((i + 1) * self.size)],
+        }
+    }
+
+    /// Get an iterator over the rows of a matrix.
+    pub fn rows(&self) -> Rows {
+        Rows { i: 0, matrix: self }
+    }
 }
 
 impl std::ops::Index<(usize, usize)> for Matrix {
@@ -109,6 +216,83 @@ impl Default for Matrix {
         Self::new(0)
     }
 }
+
+pub struct Row<'r> {
+    modules: &'r bv::BitSlice,
+}
+
+impl<'r> Row<'r> {
+    pub fn len(&self) -> usize {
+        self.modules.len()
+    }
+}
+
+impl<'r> std::ops::Index<usize> for Row<'r> {
+    type Output = Module;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.modules[index].as_ref()
+    }
+}
+
+impl<'r> IntoIterator for Row<'r> {
+    type Item = Module;
+    type IntoIter = RowIter<'r>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        RowIter { i: 0, row: self }
+    }
+}
+
+pub struct RowIter<'r> {
+    i: usize,
+    row: Row<'r>,
+}
+
+impl<'r> Iterator for RowIter<'r> {
+    type Item = Module;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let i = self.i;
+        if i < self.row.len() {
+            self.i += 1;
+            Some(self.row[i])
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.row.len(), Some(self.row.len()))
+    }
+}
+
+impl<'r> ExactSizeIterator for RowIter<'r> {}
+
+pub struct Rows<'r> {
+    matrix: &'r Matrix,
+    i: usize,
+}
+
+impl<'r> Iterator for Rows<'r> {
+    type Item = Row<'r>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let i = self.i;
+        if i < self.matrix.size() {
+            self.i += 1;
+            Some(self.matrix.row(i))
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.matrix.size, Some(self.matrix.size))
+    }
+}
+
+impl<'r> ExactSizeIterator for Rows<'r> {}
 
 /// Iterator that yields the sequence of indices in a QR code matrix following the order in which the bits of the data
 /// stream are placed.
@@ -258,3 +442,4 @@ mod test {
         assert_eq!(seq.next(), None);
     }
 }
+

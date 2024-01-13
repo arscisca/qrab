@@ -1,6 +1,6 @@
 use bitvec::prelude::*;
 
-use super::{qrcode::module::Matrix, Ecl, Mask, Module, QrCode, QrInfo, Version};
+use crate::{qrcode::{Matrix, Module}, Ecl, Mask, QrCode, info::QrInfo, Version};
 
 pub(crate) struct Builder<'i> {
     info: &'i QrInfo,
@@ -131,7 +131,7 @@ impl<'i> Builder<'i> {
         // Iterate on bits and place corresponding modules on nonreserved indices
         let bv: BitVec<u8, Msb0> = BitVec::from_vec(codewords);
         let total = bv.len();
-        let mut indices = crate::qrcode::module::IndexSequenceIter::new(self.size());
+        let mut indices = crate::qrcode::IndexSequenceIter::new(self.size());
         let mut placed = 0;
         for bit in bv {
             // Get the next non-reserved index
@@ -350,7 +350,7 @@ pub enum BuildingError {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{Ecl, Encoder, EncodingConstraints, Version};
+    use crate::{Ecl, EncodingConstraints, Version};
 
     #[test]
     fn functional_info_generation() {

@@ -1,5 +1,5 @@
-pub(crate) mod builder;
-pub(crate) mod encoder;
+mod builder;
+pub mod encoder;
 pub(crate) mod segment;
 
 use std::collections::HashSet;
@@ -16,7 +16,7 @@ pub use encoder::Encoder;
 /// and inclusive ranges.
 /// # Examples
 /// ```rust
-/// use qrab::Constraint;
+/// use qrab::encode::Constraint;
 /// // Direct usage
 /// assert!(Constraint::Min(5).accepts(&6));
 /// assert!(Constraint::Between{min: 10, max: 20}.accepts(&15));
@@ -48,7 +48,7 @@ impl<T: Ord + std::fmt::Debug> Constraint<T> {
     /// Check whether the constraints accepts `value`.
     /// # Example
     /// ```rust
-    /// use qrab::Constraint;
+    /// use qrab::encode::Constraint;
     /// let c = Constraint::Between {min: 56, max: 78};
     /// assert!(c.accepts(&60));
     /// assert!(!c.accepts(&100));
@@ -66,7 +66,7 @@ impl<T: Ord + std::fmt::Debug> Constraint<T> {
     /// Get the inclusive minimum allowed value according to the constraint.
     /// # Examples
     /// ```rust
-    /// use qrab::Constraint;
+    /// use qrab::encode::Constraint;
     /// assert_eq!(Constraint::Min(12).min(), Some(&12));
     /// assert_eq!(Constraint::Between{min: 3, max: 8}.min(), Some(&3));
     /// assert_eq!(Constraint::Max(100).min(), None);
@@ -83,7 +83,7 @@ impl<T: Ord + std::fmt::Debug> Constraint<T> {
     /// Get the inclusive maximum allowed value according to the constraint.
     /// # Examples
     /// ```rust
-    /// use qrab::Constraint;
+    /// use qrab::encode::Constraint;
     /// assert_eq!(Constraint::Max(8).max(), Some(&8));
     /// assert_eq!(Constraint::Between{min: 5, max: 9}.max(), Some(&9));
     /// assert_eq!(Constraint::Min(10).max(), None);
@@ -100,10 +100,11 @@ impl<T: Ord + std::fmt::Debug> Constraint<T> {
     /// Get a `(min, max)` tuple representing the optional inclusive extremes of the range allowed by this constraint.
     /// # Examples
     /// ```rust
-    /// assert_eq!(qrab::Constraint::Between{min: 10, max: 20}.extremes(), (Some(&10), Some(&20)));
-    /// assert_eq!(qrab::Constraint::Min(4).extremes(), (Some(&4), None));
+    /// use qrab::encode::Constraint;
+    /// assert_eq!(Constraint::Between{min: 10, max: 20}.extremes(), (Some(&10), Some(&20)));
+    /// assert_eq!(Constraint::Min(4).extremes(), (Some(&4), None));
     /// // Note: extremes are inclusive
-    /// assert_eq!(qrab::Constraint::Exact(8).extremes(), (Some(&8), Some(&8)));
+    /// assert_eq!(Constraint::Exact(8).extremes(), (Some(&8), Some(&8)));
     /// ```
     pub fn extremes(&self) -> (Option<&T>, Option<&T>) {
         (self.min(), self.max())
@@ -115,7 +116,7 @@ impl<T: Copy + Clone + Ord + std::fmt::Debug> Constraint<T> {
     /// no constraint over an extreme, `default_min` or `default_max` will be returned instead.
     /// # Examples
     /// ```rust
-    /// use qrab::Constraint;
+    /// use qrab::encode::Constraint;
     /// assert_eq!(Constraint::Between {min: 3, max: 5}.extremes_or_defaults(0, 10), (3, 5));
     /// assert_eq!(Constraint::Min(3).extremes_or_defaults(0, 10), (3, 10));
     /// assert_eq!(Constraint::Max(3).extremes_or_defaults(0, 10), (0, 3));
@@ -166,7 +167,7 @@ impl<T: Ord + std::fmt::Debug> std::fmt::Display for Constraint<T> {
 /// inputs.
 /// # Examples
 /// ```rust
-/// use qrab::{Constraint, EncodingConstraints, Version, Ecl, Mask};
+/// use qrab::{encode::Constraint, EncodingConstraints, Version, Ecl, Mask};
 /// // Define some custom, granular constraints. For convenience, constraints are compatible with inclusive ranges:
 /// let constraints = EncodingConstraints::new()
 ///     .with_version(Version::V3..=Version::V6)    // Using a range
@@ -222,7 +223,7 @@ impl EncodingConstraints {
     /// `Constraint<Version>`.
     /// # Examples
     /// ```rust
-    /// use qrab::{Constraint, EncodingConstraints, Version};
+    /// use qrab::{encode::Constraint, EncodingConstraints, Version};
     /// // Using `Constraint`s directly
     /// let direct = EncodingConstraints::new().with_version(Constraint::Min(Version::V3));
     /// // Using handy conversions

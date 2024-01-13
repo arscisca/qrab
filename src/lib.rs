@@ -1,10 +1,16 @@
+//! Library for QR code generation and scanning.
+
 pub mod encode;
+mod info;
 mod qrcode;
 
-pub use qrcode::{
-    code::QrCode,
-    info::{Ecl, InvalidVersionNumber, Mask, QrInfo, Version},
-    module::Module,
-};
+pub use qrcode::QrCode;
 
-pub use encode::{Constraint, Encoder, EncodingConstraints, EncodingError};
+pub use info::{Ecl, InvalidVersionNumber, Mask, QrInfo, Version};
+
+// Encoding re-exports
+pub use encode::{
+    Encoder,
+    EncodingConstraints,
+    EncodingError,
+};
