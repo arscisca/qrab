@@ -1,10 +1,9 @@
 use bitvec::prelude as bv;
+use itertools::Itertools;
 
 use super::{
-    Encoder,
-    EncodingConstraints,
-    EncodingError,
-    info::{Ecl, Mask, Version}
+    info::{Ecl, Mask, Version},
+    Encoder, EncodingConstraints, EncodingError,
 };
 
 /// A QR valid code symbol.
@@ -72,6 +71,10 @@ impl QrCode {
     pub fn rows(&self) -> Rows {
         self.matrix.rows()
     }
+
+    pub fn matrix(&self) -> &Matrix {
+        &self.matrix
+    }
 }
 
 impl std::fmt::Debug for QrCode {
@@ -81,6 +84,12 @@ impl std::fmt::Debug for QrCode {
             "<QR code version {:?}, ecl {:?}>",
             self.version, self.ecl
         )
+    }
+}
+
+impl AsRef<Matrix> for QrCode {
+    fn as_ref(&self) -> &Matrix {
+        self.matrix()
     }
 }
 
@@ -137,9 +146,19 @@ impl AsRef<bool> for Module {
     }
 }
 
-/// Editable row-major matrix of QR code modules that may or may not yet qualify as a valid QR code. It can be used to
-/// construct a QR code, to explore its modules and so on.
-pub(crate) struct Matrix {
+impl std::ops::BitXor<bool> for Module {
+    type Output = Module;
+
+    fn bitxor(self, rhs: bool) -> Self::Output {
+        Module::from(bool::from(self) ^ rhs)
+    }
+}
+
+// Matrix ==============================================================================================================
+/// Editable row-major square matrix of QR code modules that may or may not yet qualify as a valid QR code. It can be
+/// used to construct a QR code, to explore its modules and so on.
+#[derive(Clone)]
+pub struct Matrix {
     modules: bv::BitVec,
     size: usize,
 }
@@ -159,7 +178,7 @@ impl Matrix {
         i * self.size + j
     }
 
-    /// Get the size of the matrix.
+    /// Get the size (its width or its height) of the matrix.
     pub fn size(&self) -> usize {
         self.size
     }
@@ -175,10 +194,59 @@ impl Matrix {
         self.modules.set(index, value.into());
     }
 
+    /// Get a `Vec` containing pairs `(Module, usize)` that represent continuous strikes of the same `Module` and their
+    /// length.
+    pub(crate) fn strikes_in_row(&self, row: usize) -> Vec<(Module, usize)> {
+        self.row(row)
+            .into_iter()
+            .group_by(|b| *b)
+            .into_iter()
+            .map(|(key, group)| (Module::from(key), group.count()))
+            .collect()
+    }
+
+    fn fill_row_chunk(&mut self, value: Module, i: usize, j0: usize, width: usize) {
+        let row_range = (i * self.size)..((i + 1) * self.size);
+        let row = &mut self.modules.as_mut_bitslice()[row_range];
+        let col_range = j0..(j0 + width);
+        row[col_range].fill(value.into());
+    }
+
+    pub fn transpose(self) -> Matrix {
+        let mut transposed = Matrix::new(self.size);
+        // TODO: This can be optimized by working with the bitvec's underlying data rather than raw bits
+        for i in 0..self.size {
+            for j in (i + 1)..self.size {
+                let starting_index = self.linearized_index(i, j);
+                let transposed_index = transposed.linearized_index(j, i);
+                transposed
+                    .modules
+                    .set(transposed_index, self.modules[starting_index]);
+            }
+        }
+        transposed
+    }
+
+    /// Fill the region with its top-left corner in `(i0. j0)` and of sizes `width` and `height` with `value`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use qrab::{Matrix, Module};
+    /// // Construct a 10x10 matrix
+    /// let mut m = Matrix::new(10);
+    /// // Fill its bottom right 2x2 corner with dark modules
+    /// m.fill(Module::Dark, 7, 7, 2, 2);
+    /// ```
+    pub fn fill(&mut self, value: Module, i0: usize, j0: usize, height: usize, width: usize) {
+        for i in i0..(i0 + height) {
+            self.fill_row_chunk(value, i, j0, width);
+        }
+    }
+
     /// Toggle elements of the matrix based on the passed `toggle`. It is passed the indices `(i, j)`
     /// of each module and it must return `true` if the module at that position should be toggled,
     /// `false` otherwise.
-    pub fn toggle_with<F: Fn(usize, usize) -> bool>(&mut self, toggle: F) {
+    fn toggle_with<F: Fn(usize, usize) -> bool>(&mut self, toggle: F) {
         for i in 0..self.size {
             for j in 0..self.size {
                 if toggle(i, j) {
@@ -188,6 +256,23 @@ impl Matrix {
                 }
             }
         }
+    }
+
+    /// Apply `mask` to toggle the modules in the matrix.
+    pub fn mask(&mut self, mask: Mask) {
+        let toggle = mask.function();
+        for (i, chunk) in self.modules.chunks_mut(self.size).enumerate() {
+            for (j, mut bit) in chunk.iter_mut().enumerate() {
+                if toggle(i, j) {
+                    bit.set(!*bit);
+                }
+            }
+        }
+        // self.toggle_with(mask.function());
+    }
+
+    pub(crate) fn num_dark_modules(&self) -> usize {
+        self.modules.count_ones()
     }
 
     /// Get an alias to the `i`th row of the matrix.
@@ -442,4 +527,3 @@ mod test {
         assert_eq!(seq.next(), None);
     }
 }
-

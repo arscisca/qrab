@@ -1,29 +1,35 @@
 use bitvec::prelude::*;
 
-use crate::{qrcode::{Matrix, Module}, Ecl, Mask, QrCode, info::QrInfo, Version};
+use crate::{
+    info::QrInfo,
+    qrcode::{Matrix, Module},
+    Ecl, EncodingConstraints, EncodingError, Mask, QrCode, Version,
+};
 
-pub(crate) struct Builder<'i> {
-    info: &'i QrInfo,
+pub(crate) struct Builder<'b> {
+    info: &'b QrInfo,
+    constraints: &'b EncodingConstraints,
     matrix: Matrix,
 }
 
-impl<'i> Builder<'i> {
+impl<'b> Builder<'b> {
     const RESERVED_MODULE: Module = Matrix::DEFAULT_MODULE_COLOR.toggled();
 
-    /// Construct a new builder with the given `settings`.
-    pub fn new(info: &'i QrInfo) -> Self {
+    /// Construct a new builder.
+    pub fn new(info: &'b QrInfo, constraints: &'b EncodingConstraints) -> Self {
         Self {
             info,
+            constraints,
             matrix: Matrix::new(info.symbol_size()),
         }
     }
 
     /// Transform `codewords` into light/dark modules and place them inside the final QR code.
-    pub fn build(mut self, codewords: Vec<u8>) -> Result<QrCode, BuildingError> {
-        self.place_codewords(codewords)?;
+    pub fn build(mut self, codewords: Vec<u8>) -> Result<QrCode, EncodingError> {
+        self.place_codewords(codewords);
         // Mask
-        let mask = self.pick_mask();
-        self.matrix.toggle_with(mask.function());
+        let mask = self.pick_mask()?;
+        self.matrix.mask(mask);
         // Locator and timing patterns
         self.draw_patterns();
         // Format information
@@ -125,14 +131,12 @@ impl<'i> Builder<'i> {
         }
     }
 
-    fn place_codewords(&mut self, codewords: Vec<u8>) -> Result<(), BuildingError> {
+    fn place_codewords(&mut self, codewords: Vec<u8>) {
         // Mark reserved areas
         self.mark_reserved_areas();
         // Iterate on bits and place corresponding modules on nonreserved indices
         let bv: BitVec<u8, Msb0> = BitVec::from_vec(codewords);
-        let total = bv.len();
         let mut indices = crate::qrcode::IndexSequenceIter::new(self.size());
-        let mut placed = 0;
         for bit in bv {
             // Get the next non-reserved index
             let next_unreserved_index =
@@ -141,17 +145,23 @@ impl<'i> Builder<'i> {
                 break;
             };
             self.matrix.set(index.0, index.1, bit.into());
-            placed += 1;
         }
-        if placed != total {
-            return Err(BuildingError::CouldntPlaceAllModules { placed, total });
-        }
-        Ok(())
     }
 
-    fn pick_mask(&self) -> Mask {
-        // TODO: Actually choose
-        Mask::M011
+    fn pick_mask(&self) -> Result<Mask, EncodingError> {
+        // Score available masks and choose the one with the smallest penalty.
+        let evaluator = MaskEvaluator::new(self.constraints.masks());
+        let penalties = evaluator.score_masks(self.matrix.clone());
+        let chosen_code_penalty = penalties
+            .into_iter()
+            .enumerate()
+            .filter(|(_, penalty)| penalty.is_some())
+            .min_by(|m1, m2| m1.1.cmp(&m2.1))
+            .ok_or(EncodingError::NoAvailableMasks)?;
+        Ok(
+            Mask::try_from(chosen_code_penalty.0 as u8)
+                .expect("chosen code should be a valid code")
+        )
     }
 
     /// Draw the symbol patterns (locator, timing, info).
@@ -163,11 +173,7 @@ impl<'i> Builder<'i> {
 
     /// Fill a rectangle with its top-left corner in `(i0, j0)` and specified `height` and `width`.
     fn fill_rect(&mut self, module: Module, i0: usize, j0: usize, height: usize, width: usize) {
-        for i in i0..(i0 + height) {
-            for j in j0..(j0 + width) {
-                self.matrix.set(i, j, module);
-            }
-        }
+        self.matrix.fill(module, i0, j0, height, width)
     }
 
     /// Fill a square with its top-left corner in `(i0, j0)` and specified `size`.
@@ -341,16 +347,134 @@ impl<'i> Builder<'i> {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum BuildingError {
-    #[error("could not place all modules: out of {total}, found space for only {placed}")]
-    CouldntPlaceAllModules { placed: usize, total: usize },
+/// Penalty calculator for all the available masks that can be applied to a matrix.
+struct MaskEvaluator<'m> {
+    mask_enables: &'m [bool; Mask::NMASKS],
+}
+
+impl<'m> MaskEvaluator<'m> {
+    const PENALTY_LINE_SAME_COLOR: u32 = 3;
+    const PENALTY_BLOCK_SAME_COLOR: u32 = 3;
+    const PENALTY_LOCATOR_PATTERN: u32 = 40;
+    const PENALTY_PROPORTION: u32 = 10;
+
+    /// Create a new evaluator with the selected `mask_enables`, where `mask_enables[i] == true` if
+    /// the mask with code `i` should be enabled.
+    pub fn new(mask_enables: &'m [bool; Mask::NMASKS]) -> Self {
+        Self { mask_enables }
+    }
+
+    /// Assign a penalty score to each active mask.
+    pub fn score_masks(mut self, mut matrix: Matrix) -> [Option<u32>; Mask::NMASKS] {
+        let mut scores = [None; Mask::NMASKS];
+        for (code, score) in scores.iter_mut().enumerate() {
+            if !self.mask_enables[code] {
+                continue;
+            }
+            let mask = Mask::try_from(code as u8).expect("Iterating through valid mask codes");
+            matrix.mask(mask);
+            let mut new_score = 0;
+            // Score penalties that are not defined by rows and columns.
+            new_score += self.score_proportions(&matrix);
+            new_score += self.score_blocks(&matrix);
+            // Score row/column penalties by looking at rows first, then transposing to look at columns.
+            for i in 0..2 {
+                new_score += self.score_same_color_strikes(&matrix);
+                new_score += self.score_locators(&matrix);
+                if i == 0 {
+                    matrix = matrix.transpose();
+                }
+            }
+            *score = Some(new_score);
+        }
+        scores
+    }
+
+    /// Update score based on contiguous strikes of the same module color in rows and columns.
+    fn score_same_color_strikes(&self, matrix: &Matrix) -> u32 {
+        let mut score = 0;
+        for i in 0..matrix.size() {
+            for (_, strike_len) in matrix.strikes_in_row(i) {
+                if strike_len >= 5 {
+                    score += MaskEvaluator::PENALTY_LINE_SAME_COLOR + strike_len as u32 - 5;
+                }
+            }
+        }
+        score
+    }
+
+    /// Update scores based on the proportion of dark to light modules.
+    fn score_proportions(&self, matrix: &Matrix) -> u32 {
+        let tot_modules = (matrix.size() * matrix.size()) as u32;
+        let percentage_dark = (matrix.num_dark_modules() as u32 * 100) / tot_modules;
+        let dist_from_50 = percentage_dark.abs_diff(50);
+        // Add Self::PENALTY_PROPORTION for every 5% away from 50%. The `saturating_sub` is because 55% should still add
+        // no penalty, whereas 56% should start adding it.
+        Self::PENALTY_PROPORTION * (dist_from_50.saturating_sub(1) / 5)
+    }
+
+    fn score_blocks(&self, matrix: &Matrix) -> u32 {
+        let mut score = 0;
+        for i in 0..(matrix.size() - 1) {
+            for j in 0..(matrix.size() - 1) {
+                let module = matrix.get(i, j);
+                if module == matrix.get(i, j + 1)
+                    && module == matrix.get(i + 1, j)
+                    && module == matrix.get(i + 1, j + 1)
+                {
+                    score += Self::PENALTY_BLOCK_SAME_COLOR;
+                }
+            }
+        }
+        score
+    }
+
+    fn score_locators(&self, matrix: &Matrix) -> u32 {
+        const PATTERN_LEN: usize = 5;
+        const PATTERN: [usize; PATTERN_LEN] = [1, 1, 3, 1, 1];
+        const FULL_WINDOW_LEN: usize = PATTERN_LEN + 1;
+        const MIN_SPACER_LEN: usize = 5;
+        const SPACER_COLOR: Module = Module::Light;
+        let mut score = 0;
+        for i in 0..matrix.size() {
+            // Collapse row into color strikes.
+            let strikes = matrix.strikes_in_row(i);
+            // Look for a locator pattern's proportions preceded or followed by 4 light modules.
+            for window in strikes.windows(FULL_WINDOW_LEN) {
+                let (first, last) = (window[0], window[FULL_WINDOW_LEN - 1]);
+                // Check whether the spacer is the first or the last element of the window.
+                let candidate_pattern = if first.0 == SPACER_COLOR && first.1 >= MIN_SPACER_LEN {
+                    // Spacer is at the start.
+                    &window[1..]
+                } else if last.0 == SPACER_COLOR && last.1 >= MIN_SPACER_LEN {
+                    // Spacer is at the end.
+                    &window[..(FULL_WINDOW_LEN - 2)]
+                } else {
+                    // There is no spacer, no penalty.
+                    continue;
+                };
+                // Compute the ratios of the candidate pattern. Note that the colors of the candidate pattern don't
+                // matter because we already grouped by color (ensuring they are alternating) and extracted the light
+                // spacer.
+                let reference_len = candidate_pattern[0].1;
+                let candidate_pattern_ratios =
+                    candidate_pattern.iter().map(|(_, len)| len / reference_len);
+                // Check whether the candidate pattern respects an actual pattern's ratios.
+                let is_pattern = candidate_pattern_ratios
+                    .zip(PATTERN.iter())
+                    .all(|(candidate_ratio, ref_ratio)| candidate_ratio == *ref_ratio);
+                if is_pattern {
+                    score += Self::PENALTY_LOCATOR_PATTERN;
+                }
+            }
+        }
+        score
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{Ecl, EncodingConstraints, Version};
 
     #[test]
     fn functional_info_generation() {
@@ -365,15 +489,5 @@ mod test {
         // TODO: Extend this test with other cases where ecl and mask are not palindromes.
         // I had issues with the order of the bits in the pattern computation because it was unclear in the standard,
         // the fact that the provided example uses palindrome data doesn't help.
-    }
-
-    #[test]
-    fn building() { /*
-                    let qrcode = Encoder::with_constraint(Constraint::VersionAndEcl(Version::V5, Ecl::M))
-                        .encode("hello, this is a very long string. Can it fit?")
-                        .unwrap();
-                    let mut ascii = String::new();
-                    qrcode.render_ascii(&mut ascii).unwrap();
-                    println!("{}", ascii);*/
     }
 }

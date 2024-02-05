@@ -352,16 +352,6 @@ impl Ecl {
             Self::H => 0b10,
         }
     }
-
-    /// Get the next higher error correction level, saturating at `Ecl::H`.
-    pub(crate) fn next(&self) -> Self {
-        match self {
-            Self::L => Self::M,
-            Self::M => Self::Q,
-            Self::Q => Self::H,
-            Self::H => Self::H,
-        }
-    }
 }
 
 impl From<&Ecl> for char {
@@ -404,11 +394,14 @@ pub enum Mask {
 }
 
 impl Mask {
+    /// Total number of existing masks.
+    pub const NMASKS: usize = 8;
+
     pub fn code(&self) -> u8 {
         *self as u8
     }
 
-    pub fn function(&self) -> impl Fn(usize, usize) -> bool {
+    pub fn function(&self) -> fn(usize, usize) -> bool {
         match self {
             Self::M000 => |i, j| (i + j) % 2 == 0,
             Self::M001 => |i, _| i % 2 == 0,
@@ -419,6 +412,35 @@ impl Mask {
             Self::M110 => |i, j| ((i * j) % 2 + (i * j) % 3) % 2 == 0,
             Self::M111 => |i, j| ((i + j) % 2 + (i * j) % 3) % 2 == 0,
         }
+    }
+}
+
+impl TryFrom<u8> for Mask {
+    type Error = InvalidMaskCode;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Mask::M000),
+            1 => Ok(Mask::M001),
+            2 => Ok(Mask::M010),
+            3 => Ok(Mask::M011),
+            4 => Ok(Mask::M100),
+            5 => Ok(Mask::M101),
+            6 => Ok(Mask::M110),
+            7 => Ok(Mask::M111),
+            n => Err(InvalidMaskCode(n)),
+        }
+    }
+}
+
+/// Error type for invalid `Mask`s.
+#[derive(thiserror::Error)]
+#[error("invalid mask code: 0b{0:03b}")]
+pub struct InvalidMaskCode(pub u8);
+
+impl std::fmt::Debug for InvalidMaskCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
