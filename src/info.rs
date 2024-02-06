@@ -279,6 +279,28 @@ impl Version {
     pub const fn number(&self) -> u8 {
         *self as u8
     }
+
+    /// Get the next higher version if it exists.
+    /// # Examples
+    /// ```rust
+    /// use qrab::Version;
+    /// assert_eq!(Version::V3.higher(), Some(Version::V4));
+    /// assert_eq!(Version::V40.higher(), None);
+    /// ```
+    pub fn higher(&self) -> Option<Version> {
+        Version::try_from(self.number() + 1).ok()
+    }
+
+    /// Get the next lower version if it exists.
+    /// # Examples
+    /// ```rust
+    /// use qrab::Version;
+    /// assert_eq!(Version::V10.lower(), Some(Version::V9));
+    /// assert_eq!(Version::V1.lower(), None);
+    /// ```
+    pub fn lower(&self) -> Option<Version> {
+        Version::try_from(self.number().checked_sub(1)?).ok()
+    }
 }
 
 impl From<Version> for u8 {
@@ -344,12 +366,45 @@ pub enum Ecl {
 }
 
 impl Ecl {
+    /// Get the 2 bit binary code that represents the Ecl in a symbol.
     pub fn code(&self) -> u8 {
         match self {
             Self::L => 0b01,
             Self::M => 0b00,
             Self::Q => 0b11,
             Self::H => 0b10,
+        }
+    }
+
+    /// Get the next higher Ecl if it exists.
+    /// # Examples
+    /// ```rust
+    /// use qrab::Ecl;
+    /// assert_eq!(Ecl::L.higher(), Some(Ecl::M));
+    /// assert_eq!(Ecl::H.higher(), None);
+    /// ```
+    pub fn higher(&self) -> Option<Self> {
+        match self {
+            Self::L => Some(Self::M),
+            Self::M => Some(Self::Q),
+            Self::Q => Some(Self::H),
+            Self::H => None,
+        }
+    }
+
+    /// Get the next lower Ecl if it exists.
+    /// # Examples
+    /// ```rust
+    /// use qrab::Ecl;
+    /// assert_eq!(Ecl::M.lower(), Some(Ecl::L));
+    /// assert_eq!(Ecl::L.lower(), None);
+    /// ```
+    pub fn lower(&self) -> Option<Self> {
+        match self {
+            Self::L => None,
+            Self::M => Some(Self::L),
+            Self::Q => Some(Self::M),
+            Self::H => Some(Self::Q),
         }
     }
 }

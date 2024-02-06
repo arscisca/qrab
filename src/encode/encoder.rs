@@ -3,7 +3,7 @@ use bitvec::prelude::*;
 use super::{
     builder::Builder,
     segment::{Segment, SegmentKind},
-    Ecl, EncodingConstraints, EncodingError, QrCode, QrInfo, Sequential, Version,
+    Ecl, EncodingConstraints, EncodingError, QrCode, QrInfo, Version,
 };
 
 /// A QR encoder with optional constraints on QR code error correction level and version.
@@ -44,10 +44,8 @@ impl Encoder {
             Version::try_from((v1.number() + v2.number()) / 2).unwrap()
         }
         // Generate ranges for version and ecl
-        let (vmin, vmax) = self.constraints.version().extremes();
-        let (mut vmin, mut vmax) = (*vmin, *vmax);
-        let (emin, emax) = self.constraints.ecl().extremes();
-        let (emin, emax) = (*emin, *emax);
+        let (mut vmin, mut vmax) = (*self.constraints.version().start(), *self.constraints.version.end());
+        let (emin, emax) = (*self.constraints.ecl().start(), *self.constraints.ecl().end());
 
         // Binary search the most conservative version and ecl pair based on constraints
         let mut info = QrInfo::new(version_midpoint(vmin, vmax), emin);
@@ -83,7 +81,7 @@ impl Encoder {
         let mut last_valid_ecl;
         while info.ecl() < emax {
             last_valid_ecl = info.ecl();
-            info.set_ecl(info.ecl().next().unwrap_or(Ecl::H));
+            info.set_ecl(info.ecl().higher().unwrap_or(Ecl::H));
             let available_space_with_ecl = info.num_data_bits();
             if available_space_with_ecl < encoding_len {
                 // The previous ecl was the limit

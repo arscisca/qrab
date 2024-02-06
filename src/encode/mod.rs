@@ -2,311 +2,139 @@ mod builder;
 pub mod encoder;
 pub(crate) mod segment;
 
+use std::ops::{RangeBounds, RangeInclusive, Bound};
+
 use crate::*;
 pub use encoder::Encoder;
 
 // Constraints =========================================================================================================
-/// Trait for types that have an order and a well defined global minimum and maximum.
-pub trait Bounded: Ord {
-    const MIN: Self;
-    const MAX: Self;
-}
-
-impl Bounded for Version {
-    const MIN: Self = Version::V1;
-    const MAX: Self = Version::V40;
-}
-
-impl Bounded for Ecl {
-    const MIN: Self = Ecl::L;
-    const MAX: Self = Ecl::H;
-}
-
-/// Trait for types that are ordered and have a well defined sequence, where (almost) each value has a `next` and a
-/// `prev` value. It is assumed that only a type's potential extremes have no successor or predecessor.
-pub trait Sequential: Sized + Ord + Copy + Clone {
-    fn next(&self) -> Option<Self>;
-    fn prev(&self) -> Option<Self>;
-}
-
-impl Sequential for Version {
-    fn next(&self) -> Option<Self> {
-        Self::try_from(self.number() + 1).ok()
-    }
-
-    fn prev(&self) -> Option<Self> {
-        let prev_number = self.number().checked_sub(1)?;
-        Self::try_from(prev_number).ok()
-    }
-}
-
-impl Sequential for Ecl {
-    fn next(&self) -> Option<Self> {
-        match self {
-            Self::L => Some(Self::M),
-            Self::M => Some(Self::Q),
-            Self::Q => Some(Self::H),
-            Self::H => None,
-        }
-    }
-
-    fn prev(&self) -> Option<Self> {
-        match self {
-            Self::L => None,
-            Self::M => Some(Self::L),
-            Self::Q => Some(Self::M),
-            Self::H => Some(Self::Q),
-        }
-    }
-}
-
-/// Constraint over the possible values of `T`. The constraint `Constraint::any()` accepts any value of `T`.
-/// # Constructing from ranges
-/// Aside from the available like `Constraint::min()` and `Constraint::max()`, it is also possible to build constraints
-/// from ranges. For example, these two declarations are equivalent:
-/// ```rust
-/// use qrab::{encode::Constraint, Version};
-/// let c1 = Constraint::min(Version::V3);
-/// let c2 = Constraint::from(Version::V3..);
-/// assert_eq!(c1, c2);
-/// ```
+/// Collection of user-defined constraints to enforce in the encoding process. Constraints cannot controlled while being
+/// defined, so there may be instances where an encoder won't be able to encode some input data because the constraints
+/// are too restrictive.
 /// # Examples
 /// ```rust
-/// use qrab::{encode::Constraint, Version};
-/// // Direct usage
-/// assert!(Constraint::min(Version::V5).accepts(&Version::V6));
-/// assert!(Constraint::between(Version::V10, Version::V20).accepts(&Version::V15));
-/// // Handy way to construct constraints
-/// assert!(Constraint::from(Version::V10..=Version::V20).accepts(&Version::V15));
-/// assert!(Constraint::from(Version::V6..).accepts(&Version::V8));
-/// assert!(Constraint::from(Version::V18).accepts(&Version::V18));
-/// // Free constraint
-/// assert!(Constraint::any().accepts(&Version::V40));
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Constraint<T>
-where
-    T: Bounded + Sequential + std::fmt::Debug,
-{
-    range: std::ops::RangeInclusive<T>,
-}
-
-impl<T> Constraint<T>
-where
-    T: Bounded + Sequential + std::fmt::Debug,
-{
-    /// Construct a constraint that accepts any value of `T`.
-    /// # Examples
-    /// ```rust
-    /// use qrab::{encode::Constraint, Version};
-    /// let c = Constraint::any();
-    /// assert!(c.accepts(&Version::V1));
-    /// assert!(c.accepts(&Version::V40));
-    /// ```
-    pub fn any() -> Self {
-        Self::from_range(T::MIN..=T::MAX)
-    }
-
-    /// Construct a constraint that accepts only values equal to `val`.
-    /// ```rust
-    /// use qrab::{encode::Constraint, Version};
-    /// let c = Constraint::exactly(Version::V10);
-    /// assert!(c.accepts(&Version::V10));
-    /// assert!(!c.accepts(&Version::V11));
-    /// ```
-    pub fn exactly(val: T) -> Self {
-        Self::from_range(val..=val)
-    }
-
-    /// Construct a constraint that accepts values that are at least `min` (included).
-    /// # Examples
-    /// ```rust
-    /// use qrab::{encode::Constraint, Version};
-    /// let c = Constraint::min(Version::V10);
-    /// assert!(!c.accepts(&Version::V9));
-    /// assert!(c.accepts(&Version::V10));
-    /// ```
-    pub fn min(min: T) -> Self {
-        Self::from_range(min..)
-    }
-
-    /// Construct a constraint that accepts value that are at most `max` (included).
-    /// # Examples
-    /// ```rust
-    /// use qrab::{encode::Constraint, Version};
-    /// let c = Constraint::max(Version::V10);
-    /// assert!(c.accepts(&Version::V10));
-    /// assert!(!c.accepts(&Version::V11));
-    /// ```
-    pub fn max(max: T) -> Self {
-        Self::from_range(..=max)
-    }
-
-    /// Construct a constraint that accepts value that are between `min` and `max`, both extremes included.
-    /// # Examples
-    /// ```rust
-    /// use qrab::{encode::Constraint, Version};
-    /// let c = Constraint::between(Version::V10, Version::V20);
-    /// assert!(c.accepts(&Version::V10));
-    /// assert!(!c.accepts(&Version::V30));
-    /// ```
-    pub fn between(min: T, max: T) -> Self {
-        Self::from_range(min..=max)
-    }
-
-    /// Construct a constraint based on a `range`. Since the generic `T` is required to be `Sequential`, it doesn't
-    /// matter whether either of the extremes of the range is included or not: whenever an extreme is not included, the
-    /// constraint will use its previous (for the minimum) or following (for the maximum) value.
-    fn from_range<R: std::ops::RangeBounds<T>>(range: R) -> Self {
-        let min = match range.start_bound() {
-            std::ops::Bound::Included(b) => b.clone(),
-            std::ops::Bound::Excluded(b) => b.next().unwrap_or(T::MAX),
-            std::ops::Bound::Unbounded => T::MIN,
-        };
-        let max = match range.end_bound() {
-            std::ops::Bound::Included(b) => b.clone(),
-            std::ops::Bound::Excluded(b) => b.prev().unwrap_or(T::MIN),
-            std::ops::Bound::Unbounded => T::MAX,
-        };
-        Self { range: min..=max }
-    }
-
-    /// Check whether the constraints accepts `value`.
-    /// # Example
-    /// ```rust
-    /// use qrab::{Version, encode::Constraint};
-    /// let c = Constraint::from(Version::V4..Version::V12);
-    /// assert!(c.accepts(&Version::V6));
-    /// assert!(!c.accepts(&Version::V30));
-    /// ```
-    pub fn accepts(&self, value: &T) -> bool {
-        self.range.contains(value)
-    }
-
-    /// Get a `(min, max)` tuple representing the inclusive extremes allowed by this constraint.
-    /// # Examples
-    /// ```rust
-    /// use qrab::{encode::Constraint, Version};
-    /// assert_eq!(Constraint::from(Version::V10..=Version::V20).extremes(), (&Version::V10, &Version::V20));
-    /// assert_eq!(Constraint::min(Version::V4).extremes(), (&Version::V4, &Version::V40));
-    /// // Note: extremes are inclusive
-    /// assert_eq!(Constraint::exactly(Version::V8).extremes(), (&Version::V8, &Version::V8));
-    /// ```
-    pub fn extremes(&self) -> (&T, &T) {
-        (self.range.start(), self.range.end())
-    }
-}
-
-impl<T> From<T> for Constraint<T>
-where
-    T: Bounded + Sequential + std::fmt::Debug,
-{
-    fn from(value: T) -> Self {
-        Self::from_range(value..=value)
-    }
-}
-
-macro_rules! impl_from_range {
-    ($generic: ident, $rtype: ty) => {
-        impl<$generic> From<$rtype> for Constraint<$generic>
-        where
-            $generic: Bounded + Sequential + std::fmt::Debug,
-        {
-            fn from(value: $rtype) -> Self {
-                Self::from_range(value)
-            }
-        }
-    };
-}
-
-impl_from_range!(T, std::ops::Range<T>);
-impl_from_range!(T, std::ops::RangeInclusive<T>);
-impl_from_range!(T, std::ops::RangeFrom<T>);
-impl_from_range!(T, std::ops::RangeTo<T>);
-impl_from_range!(T, std::ops::RangeToInclusive<T>);
-impl_from_range!(T, std::ops::RangeFull);
-
-impl<T> std::fmt::Display for Constraint<T>
-where
-    T: Bounded + Sequential + std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Debug::fmt(self, f)
-    }
-}
-
-/// Collection of user-defined constraints to enforce in the encoding process. The constraints are arbitrary and there
-/// is no encoder output guarantee: constraints that are too strict will cause an encoder to be unable to encode certain
-/// inputs.
-/// # Examples
-/// ```rust
-/// use qrab::{encode::Constraint, EncodingConstraints, Version, Ecl, Mask};
-/// // Define some custom, granular constraints. For convenience, constraints are compatible with inclusive ranges:
+/// use qrab::{EncodingConstraints, Version, Ecl};
+/// // Constrain to version range `Version::V10..Version::V15` and to `Ecl::L` only.
 /// let constraints = EncodingConstraints::new()
-///     .with_version(Version::V3..=Version::V6)    // Using a range
-///     .with_ecl(Constraint::min(Ecl::Q))          // Using an explicit constraint
-///     .with_mask_in([Mask::M001, Mask::M100]);
-/// assert!(constraints.version().accepts(&Version::V4));
-/// assert!(constraints.ecl().accepts(&Ecl::H));
-/// // It is also possible to define an empty `EncodingConstraints`:
-/// let free = EncodingConstraints::none();
-/// assert!(free.version().accepts(&Version::V30));
-/// assert!(free.ecl().accepts(&Ecl::L));
+///     .with_version_in(Version::V10..Version::V15)
+///     .with_ecl(Ecl::L);
+/// assert!(constraints.version().contains(&Version::V12));
+/// assert!(!constraints.ecl().contains(&Ecl::M));
 /// ```
 pub struct EncodingConstraints {
-    version: Constraint<Version>,
-    ecl: Constraint<Ecl>,
+    version: RangeInclusive<Version>,
+    ecl: RangeInclusive<Ecl>,
     masks: [bool; Mask::NMASKS],
 }
 
 impl EncodingConstraints {
-    /// Construct with no constraints, alias of `EncodingConstraints::none()` for a better aesthetic when actually
-    /// setting up constraints.
+    /// Construct with no constraints like `EncodingConstraints::none()`.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{EncodingConstraints, Version};
+    /// let constraints = EncodingConstraints::none();
+    /// assert!(constraints.version().contains(&Version::V1));
+    /// assert!(constraints.version().contains(&Version::V40));
+    /// ```
     pub fn new() -> Self {
         Self::none()
     }
 
     /// Construct with no constraints.
-    /// # Example
+    /// # Examples
     /// ```rust
     /// use qrab::{EncodingConstraints, Version};
     /// let constraints = EncodingConstraints::none();
-    /// assert!(constraints.version().accepts(&Version::V1));
-    /// assert!(constraints.version().accepts(&Version::V40));
+    /// assert!(constraints.version().contains(&Version::V1));
+    /// assert!(constraints.version().contains(&Version::V40));
     /// ```
     pub fn none() -> Self {
         Self {
-            version: Constraint::any(),
-            ecl: Constraint::any(),
+            version: Version::V1..=Version::V40,
+            ecl: Ecl::L..=Ecl::H,
             masks: [true; 8],
         }
     }
 
-    /// Constrain the QR version. For convenience, this method is generic over all the types compatible with a
-    /// `Constraint<Version>`.
+    /// Constrain version to the specified `range`.
     /// # Examples
     /// ```rust
-    /// use qrab::{encode::Constraint, EncodingConstraints, Version};
-    /// // Using `Constraint`s directly
-    /// let direct = EncodingConstraints::new().with_version(Constraint::min(Version::V3));
-    /// // Using handy conversions
-    /// let from_range = EncodingConstraints::new().with_version(Version::V3..=Version::V5);
-    /// let exact = EncodingConstraints::new().with_version(Version::V7);
+    /// use qrab::{EncodingConstraints, Version};
+    /// let constraints = EncodingConstraints::new().with_version_in(Version::V10..=Version::V20);
+    /// assert!(constraints.version().contains(&Version::V15));
+    /// assert!(!constraints.version().contains(&Version::V30));
     /// ```
-    pub fn with_version<T: Into<Constraint<Version>>>(mut self, version: T) -> Self {
-        self.version = version.into();
+    pub fn with_version_in<T: RangeBounds<Version>>(mut self, range: T) -> Self {
+        let vmin = match range.start_bound() {
+            Bound::Included(vmin) => *vmin,
+            Bound::Excluded(vmin) => vmin.higher().unwrap_or(Version::V40),
+            Bound::Unbounded => Version::V1,
+        };
+        let vmax = match range.end_bound() {
+            Bound::Included(vmax) => *vmax,
+            Bound::Excluded(vmax) => vmax.lower().unwrap_or(Version::V1),
+            Bound::Unbounded => Version::V40,
+        };
+        self.version = vmin..=vmax;
         self
     }
 
-    /// Constrain the error correction level. For convenience, this method is generic over all the types compatible with
-    /// a `Constraint<Ecl>`.
-    pub fn with_ecl<T: Into<Constraint<Ecl>>>(mut self, ecl: T) -> Self {
-        self.ecl = ecl.into();
+    /// Constrain to a specific `version`.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{EncodingConstraints, Version};
+    /// let constraints = EncodingConstraints::new().with_version(Version::V20);
+    /// assert!(constraints.version().contains(&Version::V20));
+    /// assert!(!constraints.version().contains(&Version::V21));
+    /// ```
+    pub fn with_version(self, version: Version) -> Self {
+        self.with_version_in(version..=version)
+    }
+
+    /// Constrain error correction level to the specified `range`.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{EncodingConstraints, Ecl};
+    /// let constraints = EncodingConstraints::new().with_ecl_in(Ecl::M..Ecl::H);
+    /// assert!(constraints.ecl().contains(&Ecl::M));
+    /// assert!(!constraints.ecl().contains(&Ecl::L));
+    /// ```
+    pub fn with_ecl_in<T: RangeBounds<Ecl>>(mut self, range: T) -> Self {
+        let emin = match range.start_bound() {
+            Bound::Included(emin) => *emin,
+            Bound::Excluded(emin) => emin.higher().unwrap_or(Ecl::H),
+            Bound::Unbounded => Ecl::L,
+        };
+        let emax = match range.end_bound() {
+            Bound::Included(emax) => *emax,
+            Bound::Excluded(emax) => emax.lower().unwrap_or(Ecl::L),
+            Bound::Unbounded => Ecl::H,
+        };
+        self.ecl = emin..=emax;
         self
     }
 
-    /// Constrain the mask.
+    /// Constrain error correction level to the specified `ecl` only.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{EncodingConstraints, Ecl};
+    /// let constraints = EncodingConstraints::new().with_ecl(Ecl::Q);
+    /// assert!(constraints.ecl().contains(&Ecl::Q));
+    /// assert!(!constraints.ecl().contains(&Ecl::M));
+    /// ```
+    pub fn with_ecl(self, ecl: Ecl) -> Self {
+        self.with_ecl_in(ecl..=ecl)
+    }
+
+    /// Constrain mask to the selected `values`.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{EncodingConstraints, Mask};
+    /// let constraints = EncodingConstraints::new().with_mask_in([Mask::M010, Mask::M111]);
+    /// assert_eq!(constraints.masks(), &[false, false, true, false, false, false, false, true]);
+    /// ```
     pub fn with_mask_in<I: IntoIterator<Item = Mask>>(mut self, values: I) -> Self {
+        self.masks.fill(false);
         for mask in values {
             self.masks[mask.code() as usize] = true;
         }
@@ -314,12 +142,12 @@ impl EncodingConstraints {
     }
 
     /// Get the current constraint on the version.
-    pub fn version(&self) -> &Constraint<Version> {
+    pub fn version(&self) -> &RangeInclusive<Version> {
         &self.version
     }
 
     /// Get the current constraint on the error correction level.
-    pub fn ecl(&self) -> &Constraint<Ecl> {
+    pub fn ecl(&self) -> &RangeInclusive<Ecl> {
         &self.ecl
     }
 
@@ -340,38 +168,16 @@ impl Default for EncodingConstraints {
 /// Encoding error.
 #[derive(Debug, thiserror::Error)]
 pub enum EncodingError {
+    /// Data is too long for the encoder constraints.
     #[error(
-        "the best possible encoding under the version {ver_constr} and error correction level {ecl_constr} constraints \
+        "the best possible encoding under the version {ver_constr:?} and error correction level {ecl_constr:?} constraints \
         cannot fit the input data."
     )]
     DataTooLong {
-        ver_constr: Constraint<Version>,
-        ecl_constr: Constraint<Ecl>,
+        ver_constr: RangeInclusive<Version>,
+        ecl_constr: RangeInclusive<Ecl>,
     },
+    /// The mask constraints did not allow for any mask.
     #[error("there are no available masks")]
     NoAvailableMasks,
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn constraints_from_range() {
-        // Inclusive range
-        let c = Constraint::from(Version::V4..=Version::V5);
-        assert!(!c.accepts(&Version::V3));
-        assert!(c.accepts(&Version::V4));
-        assert!(c.accepts(&Version::V5));
-        assert!(!c.accepts(&Version::V6));
-        // Open ended ranges
-        let c = Constraint::from(Ecl::M..);
-        assert!(!c.accepts(&Ecl::L));
-        assert!(c.accepts(&Ecl::M));
-        assert!(c.accepts(&Ecl::Q));
-        assert!(c.accepts(&Ecl::H));
-        let c = Constraint::from(..=Ecl::L);
-        assert!(c.accepts(&Ecl::L));
-        assert!(!c.accepts(&Ecl::M));
-    }
 }
