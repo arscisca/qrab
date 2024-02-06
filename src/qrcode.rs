@@ -201,7 +201,7 @@ impl Matrix {
             .into_iter()
             .group_by(|b| *b)
             .into_iter()
-            .map(|(key, group)| (Module::from(key), group.count()))
+            .map(|(key, group)| (key, group.count()))
             .collect()
     }
 
@@ -243,21 +243,6 @@ impl Matrix {
         }
     }
 
-    /// Toggle elements of the matrix based on the passed `toggle`. It is passed the indices `(i, j)`
-    /// of each module and it must return `true` if the module at that position should be toggled,
-    /// `false` otherwise.
-    fn toggle_with<F: Fn(usize, usize) -> bool>(&mut self, toggle: F) {
-        for i in 0..self.size {
-            for j in 0..self.size {
-                if toggle(i, j) {
-                    let index = self.linearized_index(i, j);
-                    let toggled = !self.modules[index];
-                    self.modules.set(index, toggled);
-                }
-            }
-        }
-    }
-
     /// Apply `mask` to toggle the modules in the matrix.
     pub fn mask(&mut self, mask: Mask) {
         let toggle = mask.function();
@@ -268,7 +253,6 @@ impl Matrix {
                 }
             }
         }
-        // self.toggle_with(mask.function());
     }
 
     pub(crate) fn num_dark_modules(&self) -> usize {

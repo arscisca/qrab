@@ -44,8 +44,14 @@ impl Encoder {
             Version::try_from((v1.number() + v2.number()) / 2).unwrap()
         }
         // Generate ranges for version and ecl
-        let (mut vmin, mut vmax) = (*self.constraints.version().start(), *self.constraints.version.end());
-        let (emin, emax) = (*self.constraints.ecl().start(), *self.constraints.ecl().end());
+        let (mut vmin, mut vmax) = (
+            *self.constraints.version().start(),
+            *self.constraints.version.end(),
+        );
+        let (emin, emax) = (
+            *self.constraints.ecl().start(),
+            *self.constraints.ecl().end(),
+        );
 
         // Binary search the most conservative version and ecl pair based on constraints
         let mut info = QrInfo::new(version_midpoint(vmin, vmax), emin);
@@ -171,11 +177,11 @@ impl<'i> SegmentEncoder<'i> {
         Ok(())
     }
 
-    fn encode_append_alnum(&mut self, alnum: &[u8]) -> Result<(), EncodingError> {
+    fn encode_append_alnum(&mut self, _alnum: &[u8]) -> Result<(), EncodingError> {
         todo!()
     }
 
-    fn encode_append_num(&mut self, num: &[u8]) -> Result<(), EncodingError> {
+    fn encode_append_num(&mut self, _num: &[u8]) -> Result<(), EncodingError> {
         todo!()
     }
 

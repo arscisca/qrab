@@ -1,8 +1,8 @@
 mod builder;
 pub mod encoder;
-pub(crate) mod segment;
+pub mod segment;
 
-use std::ops::{RangeBounds, RangeInclusive, Bound};
+use std::ops::{Bound, RangeBounds, RangeInclusive};
 
 use crate::*;
 pub use encoder::Encoder;

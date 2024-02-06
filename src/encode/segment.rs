@@ -1,6 +1,6 @@
 /// The kind of a data segment.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum SegmentKind {
+pub enum SegmentKind {
     Numeric,
     Alphanumeric,
     Bytes,
@@ -25,7 +25,7 @@ impl SegmentKind {
 
 /// A segment of contiguous data of a common `SegmentKind`.
 #[derive(Clone)]
-pub(crate) struct Segment<'a> {
+pub struct Segment<'a> {
     data: &'a [u8],
     range: std::ops::Range<usize>,
     kind: SegmentKind,
@@ -48,12 +48,8 @@ impl<'a> Segment<'a> {
         self.kind
     }
 
-    /// Get the range of this segment.
-    pub fn range(&self) -> &std::ops::Range<usize> {
-        &self.range
-    }
-
     /// Get the length of this segment based on its range.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.range.len()
     }

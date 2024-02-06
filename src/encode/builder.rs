@@ -160,7 +160,7 @@ impl<'b> Builder<'b> {
             .ok_or(EncodingError::NoAvailableMasks)?;
         Ok(
             Mask::try_from(chosen_code_penalty.0 as u8)
-                .expect("chosen code should be a valid code")
+                .expect("chosen code should be a valid code"),
         )
     }
 
@@ -365,7 +365,7 @@ impl<'m> MaskEvaluator<'m> {
     }
 
     /// Assign a penalty score to each active mask.
-    pub fn score_masks(mut self, mut matrix: Matrix) -> [Option<u32>; Mask::NMASKS] {
+    pub fn score_masks(self, mut matrix: Matrix) -> [Option<u32>; Mask::NMASKS] {
         let mut scores = [None; Mask::NMASKS];
         for (code, score) in scores.iter_mut().enumerate() {
             if !self.mask_enables[code] {
