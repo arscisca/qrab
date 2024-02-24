@@ -131,15 +131,7 @@ impl<'i> SegmentEncoder<'i> {
     pub fn encode(mut self, segments: Vec<Segment>) -> Result<Vec<u8>, EncodingError> {
         // Encode each segment singularly
         for segment in segments {
-            // Header section (segment kind and length)
-            self.append_segment_header(&segment);
-            // Data section
-            let slice = segment.data();
-            match segment.kind() {
-                SegmentKind::Bytes => self.encode_append_bytes(slice)?,
-                SegmentKind::Alphanumeric => self.encode_append_alnum(slice)?,
-                SegmentKind::Numeric => self.encode_append_num(slice)?,
-            };
+            self.encode_append_segment(segment)?;
         }
         // If it fits, append end indicator
         if self.bits.capacity() - self.bits.len() >= 4 {
@@ -152,24 +144,40 @@ impl<'i> SegmentEncoder<'i> {
         Ok(codewords)
     }
 
-    fn append_segment_header(&mut self, segment: &Segment) {
-        // Determine segment kind code
-        // Determine segment length
-        let len = segment.len();
-        // Bytes header
-        assert_eq!(
-            segment.kind(),
-            SegmentKind::Bytes,
-            "Other segment headers are different"
+    fn encode_append_segment(&mut self, segment: Segment) -> Result<(), EncodingError> {
+        self.encode_append_segment_header(&segment)?;
+        let data = segment.data();
+        match segment.kind() {
+            SegmentKind::Bytes => self.encode_append_bytes(data),
+            SegmentKind::Numeric => self.encode_append_num(data),
+            SegmentKind::Alphanumeric => self.encode_append_alnum(data),
+        }
+    }
+
+    fn encode_append_segment_header(&mut self, segment: &Segment) -> Result<(), EncodingError> {
+        // Mode indicator.
+        #[rustfmt::skip]
+        let mode_indicator = match segment.kind() {
+            SegmentKind::Numeric =>      bits![static 0, 0, 0, 1],
+            SegmentKind::Alphanumeric => bits![static 0, 0, 1, 0],
+            SegmentKind::Bytes =>        bits![static 0, 1, 0, 0],
+        };
+        self.bits.extend_from_bitslice(mode_indicator);
+
+        // Character count and its bits.
+        let char_count = segment.len();
+        let char_count_bits = char_count.view_bits::<Msb0>();
+        // Number of bits of the character count to report in the header.
+        let char_count_bits_len = self.info.char_count_len(segment.kind());
+        debug_assert!(
+            char_count < (1 << char_count_bits_len) - 1,
+            "character count cannot fit in the header"
         );
-        self.bits.extend_from_bitslice(bits![0, 1, 0, 0]);
-        // Character count indicator
-        let char_count_len = self.info.char_count_len(segment.kind());
-        let len_bits = len.view_bits::<Msb0>();
-        let len_bits_view_start = len_bits.len() - char_count_len;
-        let len_bits_view_end = len_bits.len();
+        // Truncate and append the last `char_count_bits_len` of `char_count_bits`.
+        let truncation_start = char_count_bits.len() - char_count_bits_len;
         self.bits
-            .extend_from_bitslice(&len_bits[len_bits_view_start..len_bits_view_end]);
+            .extend_from_bitslice(&char_count_bits[truncation_start..]);
+        Ok(())
     }
 
     fn encode_append_bytes(&mut self, bytes: &[u8]) -> Result<(), EncodingError> {
@@ -177,12 +185,60 @@ impl<'i> SegmentEncoder<'i> {
         Ok(())
     }
 
-    fn encode_append_alnum(&mut self, _alnum: &[u8]) -> Result<(), EncodingError> {
-        todo!()
+    fn encode_append_alnum(&mut self, alnum: &[u8]) -> Result<(), EncodingError> {
+        const BIN_DIGITS_LONG: usize = 11;
+        const BIN_DIGITS_SHORT: usize = 6;
+        fn encode(c: u8) -> Result<u16, EncodingError> {
+            match c {
+                c @ b'0'..=b'9' => Ok((c - b'0') as u16),
+                c @ b'A'..=b'Z' => Ok((c - b'A') as u16 + 10),
+                b' ' => Ok(36),
+                b'$' => Ok(37),
+                b'%' => Ok(38),
+                b'*' => Ok(39),
+                b'+' => Ok(40),
+                b'-' => Ok(41),
+                b'.' => Ok(42),
+                b'/' => Ok(43),
+                b':' => Ok(44),
+                invalid => Err(EncodingError::InvalidSegmentKind(SegmentKind::Numeric, Box::new([invalid]))),
+            }
+        }
+        // Collect input into pairs.
+        let mut pairs = alnum.chunks_exact(2);
+        for pair in &mut pairs {
+            let (first, second) = (encode(pair[0])?, encode(pair[1])?);
+            let number: u16 = 45 * first + second;
+            // Append the last `BIN_DIGITS_LONG` bits of `number`.
+            let bits = &number.view_bits::<Msb0>()[u16::BITS as usize - BIN_DIGITS_LONG..];
+            self.bits.extend_from_bitslice(bits);
+        }
+        // There might only be a single remainder.
+        if let Some(&remainder) = pairs.remainder().first() {
+            let number = encode(remainder)?;
+            // Append the last `BIN_DIGITS_SHORT` bits of `number`.
+            let bits = &number.view_bits::<Msb0>()[u16::BITS as usize - BIN_DIGITS_SHORT..];
+            self.bits.extend_from_bitslice(bits);
+        }
+        Ok(())
     }
 
-    fn encode_append_num(&mut self, _num: &[u8]) -> Result<(), EncodingError> {
-        todo!()
+    fn encode_append_num(&mut self, num: &[u8]) -> Result<(), EncodingError> {
+        const DIGITS_GROUPING: usize = 3;
+        // Divide in groups of 3 digits
+        for dec_digits in num.chunks(DIGITS_GROUPING) {
+            let dec_digits = String::from_utf8_lossy(dec_digits);
+            let number: u16 = dec_digits.parse().map_err(|_| {
+                EncodingError::InvalidSegmentKind(
+                    SegmentKind::Numeric,
+                    num.into(),
+                )
+            })?;
+            let num_bin_digits = 1 + 3 * dec_digits.len();
+            let bin_digits = &number.view_bits::<Msb0>()[u16::BITS as usize - num_bin_digits..];
+            self.bits.extend_from_bitslice(bin_digits);
+        }
+        Ok(())
     }
 
     fn append_padding(&mut self) {
@@ -295,16 +351,29 @@ impl EcEncoder {
 mod test {
     use super::*;
 
+    fn encode_segment_full<T: AsRef<[u8]>>(
+        data: T,
+        kind: SegmentKind,
+        info: &QrInfo,
+    ) -> Result<SegmentEncoder, EncodingError> {
+        let data = data.as_ref();
+        let segment = Segment::new(data, 0..data.len(), kind);
+        let mut encoder = SegmentEncoder::new(info);
+        encoder.encode_append_segment(segment).map(|_| encoder)
+    }
+
     #[test]
-    fn bytes_data_encoding() {
-        let data = "hello".as_bytes();
+    fn bytes_encoding() {
         let info = QrInfo::new(Version::V1, Ecl::L);
-        let mut e = SegmentEncoder::new(&info);
-        // Encoding bytes does not change the bytes themselves
-        e.encode_append_bytes(data).unwrap();
+        let encoder = encode_segment_full("hello", SegmentKind::Bytes, &info).unwrap();
+        #[rustfmt::skip]
         assert_eq!(
-            e.bits,
+            encoder.bits,
             bits![
+                // Header
+                0, 1, 0, 0,             // Mode indicator
+                0, 0, 0, 0, 0, 1, 0, 1, // Character count
+                // Data
                 0, 1, 1, 0, 1, 0, 0, 0, // h
                 0, 1, 1, 0, 0, 1, 0, 1, // e
                 0, 1, 1, 0, 1, 1, 0, 0, // l
@@ -315,18 +384,58 @@ mod test {
     }
 
     #[test]
-    fn bytes_header() {
-        let data = "doggo".as_bytes();
-        let info = QrInfo::new(Version::V1, Ecl::L);
-        let s = Segment::new(data, 0..data.len(), SegmentKind::Bytes);
-        let mut e = SegmentEncoder::new(&info);
-        e.append_segment_header(&s);
-        // ---------------------[.HEADER...|.CHARACTER COUNT.......]
-        assert_eq!(e.bits, bits![0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1])
+    fn num_valid_encoding() {
+        let info = QrInfo::new(Version::V1, Ecl::H);
+        let encoder = encode_segment_full("01234567", SegmentKind::Numeric, &info).unwrap();
+        #[rustfmt::skip]
+        assert_eq!(
+            encoder.bits,
+            bits![
+                // Header
+                0, 0, 0, 1,                     // Mode indicator
+                0, 0, 0, 0, 0, 0, 1, 0, 0, 0,   // Character count
+                // Data
+                0, 0, 0, 0, 0, 0, 1, 1, 0, 0,   // 012
+                0, 1, 0, 1, 0, 1, 1, 0, 0, 1,   // 345
+                1, 0, 0, 0, 0, 1, 1,            // 67
+            ]
+        );
     }
 
     #[test]
-    fn bytes_full() {
+    fn num_invalid_encoding() {
+        let info = QrInfo::new(Version::V20, Ecl::L);
+        assert!(encode_segment_full("012aaa567", SegmentKind::Numeric, &info).is_err());
+    }
+
+    #[test]
+    fn alnum_valid_encoding() {
+        let info = QrInfo::new(Version::V1, Ecl::H);
+        let encoder = encode_segment_full("AC-42", SegmentKind::Alphanumeric, &info).unwrap();
+        #[rustfmt::skip]
+        assert_eq!(
+            encoder.bits,
+            bits![
+                // Header
+                0, 0, 1, 0,                         // Mode indicator
+                0, 0, 0, 0, 0, 0, 1, 0, 1,          // Character count
+                // Data
+                0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0,    // AC
+                1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1,    // -4
+                0, 0, 0, 0, 1, 0                    // 2
+            ]
+        );
+    }
+
+    #[test]
+    fn alnum_invalid_encoding() {
+        let info = QrInfo::new(Version::V1, Ecl::H);
+        assert!(encode_segment_full("Ac-42", SegmentKind::Alphanumeric, &info).is_err());
+    }
+
+    /// Test the full encoding (header, data, and padding) of some data using a single mode.
+    #[test]
+    fn bytes_full_encoding() {
         let data = "hello".as_bytes();
         let info = QrInfo::new(Version::V1, Ecl::M);
         let enc = SegmentEncoder::new(&info);

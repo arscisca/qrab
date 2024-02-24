@@ -177,6 +177,8 @@ pub enum EncodingError {
         ver_constr: RangeInclusive<Version>,
         ecl_constr: RangeInclusive<Ecl>,
     },
+    #[error("invalid data for {0:?} segment: '{1:x?}'")]
+    InvalidSegmentKind(segment::SegmentKind, Box<[u8]>),
     /// The mask constraints did not allow for any mask.
     #[error("there are no available masks")]
     NoAvailableMasks,
