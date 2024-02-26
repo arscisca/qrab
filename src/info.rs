@@ -1,6 +1,6 @@
 use itertools::Itertools;
 
-use crate::encode::segment::{Segment, SegmentKind};
+use crate::encode::segment::{Mode, Segment};
 
 // QrInfo ==============================================================================================================
 /// Collection of the determinant information of a QR code, grouping its version, error correction level and mask.
@@ -69,13 +69,12 @@ impl QrInfo {
         self.num_data_codewords() * 8
     }
 
-    /// Get the length in bits of the character count indicator for a segment of a given
-    /// `SegmentKind`.
-    pub(crate) fn char_count_len(&self, kind: SegmentKind) -> usize {
-        let table = match kind {
-            SegmentKind::Bytes => [8, 16, 16],
-            SegmentKind::Alphanumeric => [9, 11, 13],
-            SegmentKind::Numeric => [10, 12, 14],
+    /// Get the length in bits of the character count indicator for a segment of a given mode.
+    pub(crate) fn char_count_len(&self, mode: Mode) -> usize {
+        let table = match mode {
+            Mode::Bytes => [8, 16, 16],
+            Mode::Alphanumeric => [9, 11, 13],
+            Mode::Numeric => [10, 12, 14],
         };
         let group = match self.version.number() {
             1..=9 => 0,
@@ -94,11 +93,11 @@ impl QrInfo {
         let mut total = 0;
         for segment in segments {
             let d = segment.len();
-            let header = 4 + self.char_count_len(segment.kind());
-            let data = match segment.kind() {
-                SegmentKind::Numeric => 10 * (d / 3) + [0, 4, 7][d % 3],
-                SegmentKind::Alphanumeric => 11 * (d / 2) + 6 * (d % 2),
-                SegmentKind::Bytes => 8 * d,
+            let header = 4 + self.char_count_len(segment.mode());
+            let data = match segment.mode() {
+                Mode::Numeric => 10 * (d / 3) + [0, 4, 7][d % 3],
+                Mode::Alphanumeric => 11 * (d / 2) + 6 * (d % 2),
+                Mode::Bytes => 8 * d,
             };
             total += header + data;
         }

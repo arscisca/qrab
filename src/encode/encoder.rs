@@ -1,9 +1,10 @@
 use bitvec::prelude::*;
+use itertools::Itertools;
 
 use super::{
     builder::Builder,
-    segment::{Segment, SegmentKind},
-    Ecl, EncodingConstraints, EncodingError, QrCode, QrInfo, Version,
+    segment::{Mode, Segment},
+    Ecl, EncodingConstraints, EncodingError, ModeConstraint, QrCode, QrInfo, Version,
 };
 
 /// A QR encoder with optional constraints on QR code error correction level and version.
@@ -29,7 +30,7 @@ impl Encoder {
     /// happen even with the default constraints e.g. when the data is just too big for any QR code.
     pub fn encode<T: AsRef<[u8]>>(self, data: T) -> Result<QrCode, EncodingError> {
         let data = data.as_ref();
-        let segments = self.segment(data);
+        let segments = self.segment(data)?;
         let info = self.resolve_constraints(&segments)?;
         let codewords = SegmentEncoder::new(&info).encode(segments)?;
         // Add ECC encoding
@@ -99,10 +100,95 @@ impl Encoder {
         Ok(info)
     }
 
-    pub(crate) fn segment<'a>(&'a self, data: &'a [u8]) -> Vec<Segment<'a>> {
-        // TODO: Actually analyze data to perform the best segmentation.
-        let segment = Segment::new(data, 0..data.len(), SegmentKind::Bytes);
-        vec![segment]
+    /// Segment input `data` according to the provided constraints.
+    pub(crate) fn segment<'a>(&'a self, data: &'a [u8]) -> Result<Vec<Segment<'a>>, EncodingError> {
+        // Get the mode groups and compress them.
+        let groups = self.assign_modes_and_group(data)?;
+        let compressed = self.compress_mode_groups(groups);
+        // Check whether we have multiple modes and if that's allowed by the constraint and act accordingly.
+        match (compressed.len(), self.constraints.mode()) {
+            (0, _) => {
+                unreachable!("there must be at least 1 group")
+            }
+            (1, _) => {
+                // All data was assigned to a single mode.
+                let mode = compressed[0].0;
+                debug_assert_eq!(data.len(), compressed[0].1);
+                Ok(vec![Segment::new(data, mode)])
+            }
+            (2.., ModeConstraint::AnyMixed | ModeConstraint::TryOrPromoteMixed(_)) => {
+                // There are multiple modes being used and that's allowed: freely collect segments from groups.
+                let mut segments = Vec::with_capacity(compressed.len());
+                let mut idx_start = 0;
+                for (mode, nbytes) in compressed {
+                    segments.push(Segment::new(&data[idx_start..(idx_start + nbytes)], mode));
+                    idx_start += nbytes;
+                }
+                Ok(segments)
+            }
+            (2.., ModeConstraint::AnySingle | ModeConstraint::TryOrPromoteSingle(_)) => {
+                // There are multiple modes being used, and that's not allowed; but we are allowed to promote. Promote
+                // everything to a single, most generic mode.
+                let most_generic = compressed
+                    .into_iter()
+                    .max_by(|(mode1, _), (mode2, _)| mode1.cmp(mode2))
+                    .expect("there is at least one element in the vector")
+                    .0;
+                Ok(vec![Segment::new(data, most_generic)])
+            }
+            (2.., ModeConstraint::TryOrFail(_)) => {
+                // There is a hard constraint on the mode, so we would have failed earlier if we generated any mode
+                // other than the constraint.
+                unreachable!("there cannot be multiple modes with a hard constraint")
+            }
+        }
+    }
+
+    /// Assign the most restrictive segment mode to each byte, then group contiguous mode into `(mode, count)` pairs.
+    fn assign_modes_and_group(&self, data: &[u8]) -> Result<Vec<(Mode, usize)>, EncodingError> {
+        /// Review `mode` based on `constraint`.
+        fn review(mode: Mode, constraint: ModeConstraint) -> Result<Mode, EncodingError> {
+            match constraint {
+                ModeConstraint::AnyMixed | ModeConstraint::AnySingle => {
+                    // Any mode is acceptable. Mixing will be dealt with later.
+                    Ok(mode)
+                }
+                ModeConstraint::TryOrPromoteMixed(constr)
+                | ModeConstraint::TryOrPromoteSingle(constr) => {
+                    // Use the most generic between `mode` and `constr`. Mixing modes will be dealt with later.
+                    Ok(mode.most_generic(constr))
+                }
+                ModeConstraint::TryOrFail(constr) => {
+                    // There is a hard constraint. If it is possible to use the constraint (because it is equal to the
+                    // proposed mode, or it is more generic), then do so; otherwise return an error.
+                    if constr.is_eq_or_more_generic(mode) {
+                        Ok(constr)
+                    } else {
+                        Err(EncodingError::CannotEncodeWithMode(constr))
+                    }
+                }
+            }
+        }
+
+        // Assign (and review) the strictest possible mode to each byte.
+        let modes: Result<Vec<Mode>, EncodingError> = data
+            .iter()
+            .map(|&byte| review(Mode::strictest(byte), self.constraints.mode()))
+            .collect();
+        let modes = modes?;
+        // Group by common mode.
+        let groups: Vec<(Mode, usize)> = modes
+            .into_iter()
+            .group_by(|mode| *mode)
+            .into_iter()
+            .map(|(mode, group)| (mode, group.count()))
+            .collect();
+        Ok(groups)
+    }
+
+    fn compress_mode_groups(&self, groups: Vec<(Mode, usize)>) -> Vec<(Mode, usize)> {
+        // TODO: actually compress groups.
+        groups
     }
 }
 
@@ -147,20 +233,21 @@ impl<'i> SegmentEncoder<'i> {
     fn encode_append_segment(&mut self, segment: Segment) -> Result<(), EncodingError> {
         self.encode_append_segment_header(&segment)?;
         let data = segment.data();
-        match segment.kind() {
-            SegmentKind::Bytes => self.encode_append_bytes(data),
-            SegmentKind::Numeric => self.encode_append_num(data),
-            SegmentKind::Alphanumeric => self.encode_append_alnum(data),
+        match segment.mode() {
+            Mode::Bytes => self.encode_append_bytes(data),
+            Mode::Numeric => self.encode_append_num(data),
+            Mode::Alphanumeric => self.encode_append_alnum(data),
         }
+        Ok(())
     }
 
     fn encode_append_segment_header(&mut self, segment: &Segment) -> Result<(), EncodingError> {
         // Mode indicator.
         #[rustfmt::skip]
-        let mode_indicator = match segment.kind() {
-            SegmentKind::Numeric =>      bits![static 0, 0, 0, 1],
-            SegmentKind::Alphanumeric => bits![static 0, 0, 1, 0],
-            SegmentKind::Bytes =>        bits![static 0, 1, 0, 0],
+        let mode_indicator = match segment.mode() {
+            Mode::Numeric =>      bits![static 0, 0, 0, 1],
+            Mode::Alphanumeric => bits![static 0, 0, 1, 0],
+            Mode::Bytes =>        bits![static 0, 1, 0, 0],
         };
         self.bits.extend_from_bitslice(mode_indicator);
 
@@ -168,9 +255,9 @@ impl<'i> SegmentEncoder<'i> {
         let char_count = segment.len();
         let char_count_bits = char_count.view_bits::<Msb0>();
         // Number of bits of the character count to report in the header.
-        let char_count_bits_len = self.info.char_count_len(segment.kind());
+        let char_count_bits_len = self.info.char_count_len(segment.mode());
         debug_assert!(
-            char_count < (1 << char_count_bits_len) - 1,
+            char_count < (1 << char_count_bits_len),
             "character count cannot fit in the header"
         );
         // Truncate and append the last `char_count_bits_len` of `char_count_bits`.
@@ -180,34 +267,33 @@ impl<'i> SegmentEncoder<'i> {
         Ok(())
     }
 
-    fn encode_append_bytes(&mut self, bytes: &[u8]) -> Result<(), EncodingError> {
+    fn encode_append_bytes(&mut self, bytes: &[u8]) {
         self.bits.extend_from_raw_slice(bytes);
-        Ok(())
     }
 
-    fn encode_append_alnum(&mut self, alnum: &[u8]) -> Result<(), EncodingError> {
+    fn encode_append_alnum(&mut self, alnum: &[u8]) {
         const BIN_DIGITS_LONG: usize = 11;
         const BIN_DIGITS_SHORT: usize = 6;
-        fn encode(c: u8) -> Result<u16, EncodingError> {
+        fn encode(c: u8) -> u16 {
             match c {
-                c @ b'0'..=b'9' => Ok((c - b'0') as u16),
-                c @ b'A'..=b'Z' => Ok((c - b'A') as u16 + 10),
-                b' ' => Ok(36),
-                b'$' => Ok(37),
-                b'%' => Ok(38),
-                b'*' => Ok(39),
-                b'+' => Ok(40),
-                b'-' => Ok(41),
-                b'.' => Ok(42),
-                b'/' => Ok(43),
-                b':' => Ok(44),
-                invalid => Err(EncodingError::InvalidSegmentKind(SegmentKind::Numeric, Box::new([invalid]))),
+                c @ b'0'..=b'9' => (c - b'0') as u16,
+                c @ b'A'..=b'Z' => (c - b'A') as u16 + 10,
+                b' ' => 36,
+                b'$' => 37,
+                b'%' => 38,
+                b'*' => 39,
+                b'+' => 40,
+                b'-' => 41,
+                b'.' => 42,
+                b'/' => 43,
+                b':' => 44,
+                invalid => panic!("cannot encode byte 0x{:x} in alphanumeric mode", invalid),
             }
         }
         // Collect input into pairs.
         let mut pairs = alnum.chunks_exact(2);
         for pair in &mut pairs {
-            let (first, second) = (encode(pair[0])?, encode(pair[1])?);
+            let (first, second) = (encode(pair[0]), encode(pair[1]));
             let number: u16 = 45 * first + second;
             // Append the last `BIN_DIGITS_LONG` bits of `number`.
             let bits = &number.view_bits::<Msb0>()[u16::BITS as usize - BIN_DIGITS_LONG..];
@@ -215,30 +301,25 @@ impl<'i> SegmentEncoder<'i> {
         }
         // There might only be a single remainder.
         if let Some(&remainder) = pairs.remainder().first() {
-            let number = encode(remainder)?;
+            let number = encode(remainder);
             // Append the last `BIN_DIGITS_SHORT` bits of `number`.
             let bits = &number.view_bits::<Msb0>()[u16::BITS as usize - BIN_DIGITS_SHORT..];
             self.bits.extend_from_bitslice(bits);
         }
-        Ok(())
     }
 
-    fn encode_append_num(&mut self, num: &[u8]) -> Result<(), EncodingError> {
+    fn encode_append_num(&mut self, num: &[u8]) {
         const DIGITS_GROUPING: usize = 3;
         // Divide in groups of 3 digits
         for dec_digits in num.chunks(DIGITS_GROUPING) {
             let dec_digits = String::from_utf8_lossy(dec_digits);
-            let number: u16 = dec_digits.parse().map_err(|_| {
-                EncodingError::InvalidSegmentKind(
-                    SegmentKind::Numeric,
-                    num.into(),
-                )
-            })?;
+            let number: u16 = dec_digits
+                .parse()
+                .unwrap_or_else(|_| panic!("cannot encode '{dec_digits}' in numeric mode"));
             let num_bin_digits = 1 + 3 * dec_digits.len();
             let bin_digits = &number.view_bits::<Msb0>()[u16::BITS as usize - num_bin_digits..];
             self.bits.extend_from_bitslice(bin_digits);
         }
-        Ok(())
     }
 
     fn append_padding(&mut self) {
@@ -353,11 +434,11 @@ mod test {
 
     fn encode_segment_full<T: AsRef<[u8]>>(
         data: T,
-        kind: SegmentKind,
+        mode: Mode,
         info: &QrInfo,
     ) -> Result<SegmentEncoder, EncodingError> {
         let data = data.as_ref();
-        let segment = Segment::new(data, 0..data.len(), kind);
+        let segment = Segment::new(data, mode);
         let mut encoder = SegmentEncoder::new(info);
         encoder.encode_append_segment(segment).map(|_| encoder)
     }
@@ -365,7 +446,7 @@ mod test {
     #[test]
     fn bytes_encoding() {
         let info = QrInfo::new(Version::V1, Ecl::L);
-        let encoder = encode_segment_full("hello", SegmentKind::Bytes, &info).unwrap();
+        let encoder = encode_segment_full("hello", Mode::Bytes, &info).unwrap();
         #[rustfmt::skip]
         assert_eq!(
             encoder.bits,
@@ -386,7 +467,7 @@ mod test {
     #[test]
     fn num_valid_encoding() {
         let info = QrInfo::new(Version::V1, Ecl::H);
-        let encoder = encode_segment_full("01234567", SegmentKind::Numeric, &info).unwrap();
+        let encoder = encode_segment_full("01234567", Mode::Numeric, &info).unwrap();
         #[rustfmt::skip]
         assert_eq!(
             encoder.bits,
@@ -403,15 +484,16 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "cannot encode 'aaa' in numeric mode")]
     fn num_invalid_encoding() {
         let info = QrInfo::new(Version::V20, Ecl::L);
-        assert!(encode_segment_full("012aaa567", SegmentKind::Numeric, &info).is_err());
+        encode_segment_full("012aaa567", Mode::Numeric, &info).unwrap();
     }
 
     #[test]
     fn alnum_valid_encoding() {
         let info = QrInfo::new(Version::V1, Ecl::H);
-        let encoder = encode_segment_full("AC-42", SegmentKind::Alphanumeric, &info).unwrap();
+        let encoder = encode_segment_full("AC-42", Mode::Alphanumeric, &info).unwrap();
         #[rustfmt::skip]
         assert_eq!(
             encoder.bits,
@@ -428,9 +510,10 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "cannot encode byte 0x63 in alphanumeric mode")]
     fn alnum_invalid_encoding() {
         let info = QrInfo::new(Version::V1, Ecl::H);
-        assert!(encode_segment_full("Ac-42", SegmentKind::Alphanumeric, &info).is_err());
+        encode_segment_full("Ac-42", Mode::Alphanumeric, &info).unwrap();
     }
 
     /// Test the full encoding (header, data, and padding) of some data using a single mode.
@@ -439,9 +522,7 @@ mod test {
         let data = "hello".as_bytes();
         let info = QrInfo::new(Version::V1, Ecl::M);
         let enc = SegmentEncoder::new(&info);
-        let codewords = enc
-            .encode(vec![Segment::new(data, 0..data.len(), SegmentKind::Bytes)])
-            .unwrap();
+        let codewords = enc.encode(vec![Segment::new(data, Mode::Bytes)]).unwrap();
         assert_eq!(
             &codewords,
             &vec![
@@ -455,7 +536,7 @@ mod test {
     fn no_constraints() {
         // Try very short data with no constraints: this should result in a 1H code
         let e = Encoder::new();
-        let segments = e.segment("short".as_ref());
+        let segments = e.segment("short".as_ref()).unwrap();
         assert_eq!(
             e.resolve_constraints(&segments).unwrap(),
             QrInfo::new(Version::V1, Ecl::H)
@@ -465,7 +546,7 @@ mod test {
         let largest_data_size =
             QrInfo::new(Version::V40, Ecl::L).num_data_codewords() - SPACE_FOR_ENCODING_HEADERS;
         let data = vec![0; largest_data_size];
-        let segments = e.segment(&data);
+        let segments = e.segment(&data).unwrap();
         assert_eq!(
             e.resolve_constraints(&segments).unwrap(),
             QrInfo::new(Version::V40, Ecl::L)

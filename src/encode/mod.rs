@@ -6,9 +6,10 @@ use std::ops::{Bound, RangeBounds, RangeInclusive};
 
 use crate::*;
 pub use encoder::Encoder;
+pub use segment::Mode;
 
 // Constraints =========================================================================================================
-/// Collection of user-defined constraints to enforce in the encoding process. Constraints cannot controlled while being
+/// Collection of user-defined constraints to enforce in the encoding process. Constraints are not checked while being
 /// defined, so there may be instances where an encoder won't be able to encode some input data because the constraints
 /// are too restrictive.
 /// # Examples
@@ -24,6 +25,7 @@ pub use encoder::Encoder;
 pub struct EncodingConstraints {
     version: RangeInclusive<Version>,
     ecl: RangeInclusive<Ecl>,
+    mode: ModeConstraint,
     masks: [bool; Mask::NMASKS],
 }
 
@@ -52,6 +54,7 @@ impl EncodingConstraints {
         Self {
             version: Version::V1..=Version::V40,
             ecl: Ecl::L..=Ecl::H,
+            mode: ModeConstraint::AnyMixed,
             masks: [true; 8],
         }
     }
@@ -126,6 +129,12 @@ impl EncodingConstraints {
         self.with_ecl_in(ecl..=ecl)
     }
 
+    /// Constrain data encoding according to the specified `mode`. This may result in encoding failures.
+    pub fn with_mode(mut self, mode: ModeConstraint) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// Constrain mask to the selected `values`.
     /// # Examples
     /// ```rust
@@ -151,6 +160,11 @@ impl EncodingConstraints {
         &self.ecl
     }
 
+    /// Get the current constraint on the mixing modes.
+    pub fn mode(&self) -> ModeConstraint {
+        self.mode
+    }
+
     /// Get the current constraint on QR masks, where the output is an array where the `i`th entry is true if the `i`th
     /// mask is accepted.
     pub fn masks(&self) -> &[bool; Mask::NMASKS] {
@@ -161,6 +175,31 @@ impl EncodingConstraints {
 impl Default for EncodingConstraints {
     fn default() -> Self {
         Self::none()
+    }
+}
+
+/// Constraint on which segment modes can be used to encode data.
+#[derive(Copy, Clone, Debug)]
+pub enum ModeConstraint {
+    /// Allow any mode, and allow mixing multiple modes in the same symbol. Doesn't fail.
+    AnyMixed,
+    /// Allow any mode, but only allow one for the entire symbol. Doesn't fail.
+    AnySingle,
+    /// Try to enforce the specified `Mode`, but allow promotions to more general modes when the requested `Mode` is not
+    /// possible. Allow mixing multiple modes in the same symbol.
+    TryOrPromoteMixed(Mode),
+    /// Try to enforce the specified `Mode`, but allow promotions to more general modes when the requested one is not
+    /// possible. Do not allow multiple modes in the same symbol: if any data segment cannot be encoded with `Mode`, the
+    /// whole symbol will be encoded using the most general mode possible. Doesn't fail.
+    TryOrPromoteSingle(Mode),
+    /// Try to enforce the specified `Mode`, and fail when data cannot be encoded that way.
+    TryOrFail(Mode),
+}
+
+impl ModeConstraint {
+    /// Specify whether the constraint allows for the usage of multiple modes in the same QR symbol.
+    pub fn allows_mixed_modes(&self) -> bool {
+        matches!(self, Self::AnyMixed | Self::TryOrPromoteMixed(_))
     }
 }
 
@@ -177,9 +216,9 @@ pub enum EncodingError {
         ver_constr: RangeInclusive<Version>,
         ecl_constr: RangeInclusive<Ecl>,
     },
-    #[error("invalid data for {0:?} segment: '{1:x?}'")]
-    InvalidSegmentKind(segment::SegmentKind, Box<[u8]>),
     /// The mask constraints did not allow for any mask.
     #[error("there are no available masks")]
     NoAvailableMasks,
+    #[error("cannot use mode '{0:?}' to encode data")]
+    CannotEncodeWithMode(Mode),
 }
