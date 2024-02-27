@@ -123,7 +123,10 @@ impl Encoder {
                 let mut segments = Vec::with_capacity(compressed.len());
                 let mut idx_start = 0;
                 for blueprint in compressed {
-                    segments.push(Segment::new(&data[idx_start..(idx_start + blueprint.len)], blueprint.mode));
+                    segments.push(Segment::new(
+                        &data[idx_start..(idx_start + blueprint.len)],
+                        blueprint.mode,
+                    ));
                     idx_start += blueprint.len;
                 }
                 debug_assert_eq!(data.len(), idx_start);
