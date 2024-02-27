@@ -1,12 +1,10 @@
 mod builder;
 pub mod encoder;
-pub mod segment;
 
 use std::ops::{Bound, RangeBounds, RangeInclusive};
 
 use crate::*;
 pub use encoder::Encoder;
-pub use segment::Mode;
 
 // Constraints =========================================================================================================
 /// Collection of user-defined constraints to enforce in the encoding process. Constraints are not checked while being

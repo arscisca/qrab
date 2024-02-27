@@ -81,8 +81,8 @@ impl std::fmt::Debug for QrCode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "<QR code version {:?}, ecl {:?}>",
-            self.version, self.ecl
+            "<QR code version {:?}, ecl {:?}, mask {:03b}>",
+            self.version, self.ecl, self.mask.code()
         )
     }
 }

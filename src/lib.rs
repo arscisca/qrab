@@ -6,7 +6,8 @@ mod qrcode;
 
 pub use qrcode::{Matrix, Module, QrCode};
 
-pub use info::{Ecl, InvalidVersionNumber, Mask, QrInfo, Version};
+use info::Segment;
+pub use info::{Ecl, InvalidVersionNumber, Mask, Mode, QrInfo, Version};
 
 // Encoding re-exports
 pub use encode::{Encoder, EncodingConstraints, EncodingError};

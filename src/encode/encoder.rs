@@ -2,9 +2,8 @@ use bitvec::prelude::*;
 use itertools::Itertools;
 
 use super::{
-    builder::Builder,
-    segment::{Mode, Segment},
-    Ecl, EncodingConstraints, EncodingError, ModeConstraint, QrCode, QrInfo, Version,
+    builder::Builder, Ecl, EncodingConstraints, EncodingError, Mode, ModeConstraint, QrCode,
+    QrInfo, Segment, Version,
 };
 
 /// A QR encoder with optional constraints on QR code error correction level and version.
@@ -57,7 +56,10 @@ impl Encoder {
         // Binary search the most conservative version and ecl pair based on constraints
         let mut info = QrInfo::new(version_midpoint(vmin, vmax), emin);
         let encoding_len = loop {
-            let encoding_len = info.predict_encoding_len(segments.iter());
+            let encoding_len = segments
+                .iter()
+                .map(|segment| info.predict_segment_encoding_len(segment.mode(), segment.len()))
+                .sum();
             if encoding_len <= info.num_data_bits() {
                 // This combination works, check if version can be any smaller
                 if info.version() > vmin && info.version() < vmax {
@@ -112,28 +114,31 @@ impl Encoder {
             }
             (1, _) => {
                 // All data was assigned to a single mode.
-                let mode = compressed[0].0;
-                debug_assert_eq!(data.len(), compressed[0].1);
+                let mode = compressed[0].mode;
+                debug_assert_eq!(data.len(), compressed[0].len);
                 Ok(vec![Segment::new(data, mode)])
             }
             (2.., ModeConstraint::AnyMixed | ModeConstraint::TryOrPromoteMixed(_)) => {
                 // There are multiple modes being used and that's allowed: freely collect segments from groups.
                 let mut segments = Vec::with_capacity(compressed.len());
                 let mut idx_start = 0;
-                for (mode, nbytes) in compressed {
-                    segments.push(Segment::new(&data[idx_start..(idx_start + nbytes)], mode));
-                    idx_start += nbytes;
+                for blueprint in compressed {
+                    segments.push(Segment::new(&data[idx_start..(idx_start + blueprint.len)], blueprint.mode));
+                    idx_start += blueprint.len;
                 }
+                debug_assert_eq!(data.len(), idx_start);
                 Ok(segments)
             }
             (2.., ModeConstraint::AnySingle | ModeConstraint::TryOrPromoteSingle(_)) => {
                 // There are multiple modes being used, and that's not allowed; but we are allowed to promote. Promote
                 // everything to a single, most generic mode.
+                let first_mode = compressed[0].mode;
                 let most_generic = compressed
                     .into_iter()
-                    .max_by(|(mode1, _), (mode2, _)| mode1.cmp(mode2))
-                    .expect("there is at least one element in the vector")
-                    .0;
+                    .map(|blueprint| blueprint.mode)
+                    .fold(first_mode, |curr_most_generic, mode| {
+                        mode.most_generic(curr_most_generic)
+                    });
                 Ok(vec![Segment::new(data, most_generic)])
             }
             (2.., ModeConstraint::TryOrFail(_)) => {
@@ -145,7 +150,7 @@ impl Encoder {
     }
 
     /// Assign the most restrictive segment mode to each byte, then group contiguous mode into `(mode, count)` pairs.
-    fn assign_modes_and_group(&self, data: &[u8]) -> Result<Vec<(Mode, usize)>, EncodingError> {
+    fn assign_modes_and_group(&self, data: &[u8]) -> Result<Vec<SegmentBlueprint>, EncodingError> {
         /// Review `mode` based on `constraint`.
         fn review(mode: Mode, constraint: ModeConstraint) -> Result<Mode, EncodingError> {
             match constraint {
@@ -177,24 +182,73 @@ impl Encoder {
             .collect();
         let modes = modes?;
         // Group by common mode.
-        let groups: Vec<(Mode, usize)> = modes
+        let groups: Vec<SegmentBlueprint> = modes
             .into_iter()
             .group_by(|mode| *mode)
             .into_iter()
-            .map(|(mode, group)| (mode, group.count()))
+            .map(|(mode, group)| SegmentBlueprint::new(mode, group.count()))
             .collect();
         Ok(groups)
     }
 
-    fn compress_mode_groups(&self, groups: Vec<(Mode, usize)>) -> Vec<(Mode, usize)> {
-        // TODO: actually compress groups.
-        groups
+    fn compress_mode_groups(&self, groups: Vec<SegmentBlueprint>) -> Vec<SegmentBlueprint> {
+        // Only compress when meaningful.
+        if groups.len() <= 1 {
+            return groups;
+        }
+
+        // TODO: this should be improved. The number of character count bits depends on which of 3 ranges the version
+        //  falls into, and it determines the overhead for a mode. Maybe, try to segment for each of the three groups
+        //  and pick the best option according to constraints.
+        // For now, let's just use the biggest possible version since the overhead will be the largest. This is
+        // sub-optimal.
+        let info = QrInfo::new(*self.constraints.version().start(), Ecl::L);
+        let mut compressed = Vec::with_capacity(groups.len());
+
+        let mut groups_iter = groups.into_iter();
+        let mut curr = groups_iter.next().unwrap();
+        for group in groups_iter {
+            // Determine whether it's beneficial to merge the current group to the new one.
+            let unmerged_size = info.predict_segment_encoding_len(curr.mode, curr.len)
+                + info.predict_segment_encoding_len(group.mode, group.len);
+
+            let merged = curr.merge(&group);
+            let merged_size = info.predict_segment_encoding_len(merged.mode, merged.len);
+            if merged_size <= unmerged_size {
+                // Merging is convenient.
+                curr = merged;
+            } else {
+                // Merging is not convenient: push the current segment blueprint.
+                compressed.push(curr);
+                curr = group;
+            }
+        }
+        // Push the last group.
+        compressed.push(curr);
+        compressed
     }
 }
 
 impl Default for Encoder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Blueprint of a segment to simplify segmentation.
+#[derive(Debug, PartialEq, Eq)]
+struct SegmentBlueprint {
+    mode: Mode,
+    len: usize,
+}
+
+impl SegmentBlueprint {
+    pub fn new(mode: Mode, len: usize) -> Self {
+        Self { mode, len }
+    }
+
+    pub fn merge(&self, other: &Self) -> Self {
+        Self::new(self.mode.most_generic(other.mode), self.len + other.len)
     }
 }
 
@@ -571,5 +625,93 @@ mod test {
             0xec, 0x11, 0xa5, 0x24, 0xd4, 0xc1, 0xed, 0x36, 0xc7, 0x87, 0x2c, 0x55,
         ];
         assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn mode_assignment_free() {
+        let data = "AAA00000mBBabcde123";
+        let encoder = Encoder::new();
+        let groups = encoder.assign_modes_and_group(data.as_ref()).unwrap();
+        // Check that no byte was unassigned.
+        assert_eq!(data.len(), groups.iter().map(|bp| bp.len).sum());
+        // Check that the modes were assigned correctly.
+        assert_eq!(
+            groups,
+            [
+                SegmentBlueprint::new(Mode::Alphanumeric, 3),
+                SegmentBlueprint::new(Mode::Numeric, 5),
+                SegmentBlueprint::new(Mode::Bytes, 1),
+                SegmentBlueprint::new(Mode::Alphanumeric, 2),
+                SegmentBlueprint::new(Mode::Bytes, 5),
+                SegmentBlueprint::new(Mode::Numeric, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn mode_assignment_constrained() {
+        let data: &[u8] = "ABC123abc".as_ref();
+        // Try successful mode constraints.
+        // Note: at this stage, single / mixed constraints are not enforced yet - only individual mode constraints will
+        // be valid.
+        #[rustfmt::skip]
+        let possible_constraints_results = [
+            // Any.
+            (ModeConstraint::AnySingle, vec![
+                SegmentBlueprint::new(Mode::Alphanumeric, 3),
+                SegmentBlueprint::new(Mode::Numeric, 3),
+                SegmentBlueprint::new(Mode::Bytes, 3),
+            ]),
+            (ModeConstraint::AnyMixed, vec![
+                SegmentBlueprint::new(Mode::Alphanumeric, 3),
+                SegmentBlueprint::new(Mode::Numeric, 3),
+                SegmentBlueprint::new(Mode::Bytes, 3),
+            ]),
+            // Try or promote.
+            (ModeConstraint::TryOrPromoteSingle(Mode::Numeric), vec![
+                SegmentBlueprint::new(Mode::Alphanumeric, 3),
+                SegmentBlueprint::new(Mode::Numeric, 3),
+                SegmentBlueprint::new(Mode::Bytes, 3),
+            ]),
+            (ModeConstraint::TryOrPromoteMixed(Mode::Numeric), vec![
+                SegmentBlueprint::new(Mode::Alphanumeric, 3),
+                SegmentBlueprint::new(Mode::Numeric, 3),
+                SegmentBlueprint::new(Mode::Bytes, 3),
+            ]),
+            (ModeConstraint::TryOrPromoteSingle(Mode::Alphanumeric), vec![
+                SegmentBlueprint::new(Mode::Alphanumeric, 6),
+                SegmentBlueprint::new(Mode::Bytes, 3)
+            ]),
+            (ModeConstraint::TryOrPromoteMixed(Mode::Alphanumeric), vec![
+                SegmentBlueprint::new(Mode::Alphanumeric, 6),
+                SegmentBlueprint::new(Mode::Bytes, 3)
+            ]),
+            (ModeConstraint::TryOrPromoteSingle(Mode::Bytes), vec![SegmentBlueprint::new(Mode::Bytes, 9)]),
+            (ModeConstraint::TryOrPromoteMixed(Mode::Bytes), vec![SegmentBlueprint::new(Mode::Bytes, 9)]),
+            // Try or fail.
+            (ModeConstraint::TryOrFail(Mode::Bytes), vec![SegmentBlueprint::new(Mode::Bytes, 9)]),
+        ];
+        for (constraint, result) in possible_constraints_results {
+            let encoder =
+                Encoder::with_constraints(EncodingConstraints::none().with_mode(constraint));
+            let groups = encoder.assign_modes_and_group(data).unwrap();
+            assert_eq!(
+                groups, result,
+                "encoding with constraint {:?} did not match the expected result",
+                constraint
+            );
+        }
+    }
+
+    #[test]
+    fn compression() {
+        let groups = vec![
+            SegmentBlueprint::new(Mode::Bytes, 10),
+            SegmentBlueprint::new(Mode::Numeric, 1),
+            SegmentBlueprint::new(Mode::Bytes, 10),
+        ];
+        let encoder = Encoder::new();
+        let compressed = encoder.compress_mode_groups(groups);
+        assert_eq!(compressed, vec![SegmentBlueprint::new(Mode::Bytes, 21)]);
     }
 }
