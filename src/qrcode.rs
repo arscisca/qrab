@@ -1,4 +1,4 @@
-use bitvec::prelude as bv;
+use bitvec::prelude::{BitSlice, BitVec};
 use itertools::Itertools;
 
 use super::{
@@ -161,7 +161,7 @@ impl std::ops::BitXor<bool> for Module {
 /// used to construct a QR code, to explore its modules and so on.
 #[derive(Clone)]
 pub struct Matrix {
-    modules: bv::BitVec,
+    modules: BitVec,
     size: usize,
 }
 
@@ -171,7 +171,7 @@ impl Matrix {
 
     /// Construct a `Matrix` based on its `size`.
     pub fn new(size: usize) -> Self {
-        let modules = bv::BitVec::repeat(Self::DEFAULT_MODULE_COLOR.into(), size * size);
+        let modules = BitVec::repeat(Self::DEFAULT_MODULE_COLOR.into(), size * size);
         Self { modules, size }
     }
 
@@ -289,7 +289,7 @@ impl Default for Matrix {
 }
 
 pub struct Row<'r> {
-    modules: &'r bv::BitSlice,
+    modules: &'r BitSlice,
 }
 
 impl<'r> Row<'r> {

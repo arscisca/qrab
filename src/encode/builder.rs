@@ -1,4 +1,7 @@
-use bitvec::prelude::*;
+use bitvec::{
+    prelude::{BitSlice, BitVec, Lsb0, Msb0},
+    view::BitView,
+};
 
 use crate::{
     info::QrInfo,

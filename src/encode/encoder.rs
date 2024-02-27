@@ -1,4 +1,7 @@
-use bitvec::prelude::*;
+use bitvec::{
+    prelude::{bits, BitVec, Lsb0, Msb0},
+    view::BitView,
+};
 use itertools::Itertools;
 
 use super::{
