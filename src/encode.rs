@@ -3,6 +3,7 @@ pub mod encoder;
 
 use std::ops::{Bound, RangeBounds, RangeInclusive};
 
+use crate::info::Segment;
 use crate::*;
 pub use encoder::Encoder;
 
@@ -207,7 +208,7 @@ impl ModeConstraint {
 pub enum EncodingError {
     /// Data is too long for the encoder constraints.
     #[error(
-        "the best possible encoding under the version {ver_constr:?} and error correction level {ecl_constr:?} constraints \
+    "the best possible encoding under the version {ver_constr:?} and error correction level {ecl_constr:?} constraints \
         cannot fit the input data."
     )]
     DataTooLong {

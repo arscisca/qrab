@@ -9,10 +9,32 @@ use super::{
     QrInfo, Segment, Version,
 };
 
-/// A QR encoder with optional constraints on QR code error correction level and version.
+/// An encoder to generate QR codes based on some input data with customizable constraints.
+///
+/// In general, an encoder will seek the best solution compliant to the constraint, where the "best solution" is an
+/// encoding that results in the physically smallest QR code with the highest error correction level possible.
 /// # Examples
-/// ## Basic usage
-/// By default, an `Encoder` will generate the smallest QR code possible to fit the provided data.
+/// ## Unconstrained
+/// ```rust
+/// use qrab::Encoder;
+/// let encoder = Encoder::new();
+/// let qrcode = encoder.encode("Hello, world!").unwrap();
+/// // With no constraint, the smallest version is picked first, and then the highest error correction level possible.
+/// assert_eq!(qrcode.version(), qrab::Version::V1);
+/// assert_eq!(qrcode.ecl(), qrab::Ecl::M);
+/// ```
+/// ## Constrained
+/// ```rust
+/// use qrab::{Encoder, EncodingConstraints};
+/// let encoder = Encoder::with_constraints(
+///     EncodingConstraints::new()
+///         .with_ecl(qrab::Ecl::H)
+/// );
+/// let qrcode = encoder.encode("Hello, world!").unwrap();
+/// // The constraint on the error correction level forces a larger version.
+/// assert_eq!(qrcode.version(), qrab::Version::V2);
+/// assert_eq!(qrcode.ecl(), qrab::Ecl::H);
+/// ```
 pub struct Encoder {
     constraints: EncodingConstraints,
 }
@@ -28,50 +50,102 @@ impl Encoder {
         Self { constraints }
     }
 
-    /// Encode `data`. It returns an error if the input data cannot be encoded with the given constraints - which could
-    /// happen even with the default constraints e.g. when the data is just too big for any QR code.
-    pub fn encode<T: AsRef<[u8]>>(self, data: T) -> Result<QrCode, EncodingError> {
-        let data = data.as_ref();
-        let segments = self.segment(data)?;
+    /// Encode `data`. Encoding can fail when the constraints (whether the custom ones, or the default ones) are too
+    /// restrictive.
+    /// # Examples
+    /// ```rust
+    /// use qrab::Encoder;
+    /// let encoder = Encoder::new();
+    /// assert!(encoder.encode("Hello, world!").is_ok());
+    /// assert!(encoder.encode("too long!".repeat(10_000)).is_err());
+    /// ```
+    pub fn encode<T: AsRef<[u8]>>(&self, data: T) -> Result<QrCode, EncodingError> {
+        let segments = self.segment(data.as_ref())?;
         let info = self.resolve_constraints(&segments)?;
         let codewords = SegmentEncoder::new(&info).encode(segments)?;
-        // Add ECC encoding
         let encoded = EcEncoder::new(&info).encode(codewords);
         let qrcode = Builder::new(&info, &self.constraints).build(encoded)?;
         Ok(qrcode)
     }
 
+    /// Segment input `data` according to the provided constraints.
+    pub(crate) fn segment<'a>(&self, data: &'a [u8]) -> Result<Vec<Segment<'a>>, EncodingError> {
+        // Get the mode groups and compress them.
+        let blueprints = self.assign_modes_and_group(data)?;
+        let blueprints = self.compress_mode_groups(blueprints);
+        // Check whether we have multiple modes and if that's allowed by the constraint and act accordingly.
+        match (blueprints.len(), self.constraints.mode()) {
+            (0, _) => {
+                unreachable!("there must be at least 1 group")
+            }
+            (1, _) | (2.., ModeConstraint::AnyMixed | ModeConstraint::TryOrPromoteMixed(_)) => {
+                // There is either a single mode, or multiple ones which are allowed: simply collect the segments.
+                let mut idx_start = 0;
+                let segments: Vec<Segment> = blueprints
+                    .into_iter()
+                    .map(|bp| {
+                        let range = idx_start..(idx_start + bp.len);
+                        idx_start += bp.len;
+                        Segment::new(&data[range], bp.mode)
+                    })
+                    .collect();
+                // Check that no segments have been lost.
+                debug_assert_eq!(data.len(), idx_start);
+                Ok(segments)
+            }
+            (2.., ModeConstraint::AnySingle | ModeConstraint::TryOrPromoteSingle(_)) => {
+                // There are multiple modes being used, and that's not allowed; but we are allowed to promote. Promote
+                // everything to a single, most generic mode.
+                let first_mode = blueprints[0].mode;
+                let most_generic = blueprints
+                    .into_iter()
+                    .map(|bp| bp.mode)
+                    .fold(first_mode, |curr_most_generic, mode| {
+                        curr_most_generic.most_generic(mode)
+                    });
+                Ok(vec![Segment::new(data, most_generic)])
+            }
+            (2.., ModeConstraint::TryOrFail(_)) => {
+                // There is a hard constraint on the mode, so we would have failed earlier if we generated any mode
+                // other than the constraint itself.
+                unreachable!("there cannot be multiple modes with a TryOrFail constraint")
+            }
+        }
+    }
+
+    /// Pick a version and ECL based on the encoder's constraints.
     fn resolve_constraints(&self, segments: &[Segment]) -> Result<QrInfo, EncodingError> {
-        // Compute the midpoint between two version for binary searching
+        /// Compute the midpoint between two versions for binary searching.
         fn version_midpoint(v1: Version, v2: Version) -> Version {
             Version::try_from((v1.number() + v2.number()) / 2).unwrap()
         }
-        // Generate ranges for version and ecl
+        // Generate ranges for version and ECL.
         let (mut vmin, mut vmax) = (
             *self.constraints.version().start(),
-            *self.constraints.version.end(),
+            *self.constraints.version().end(),
         );
         let (emin, emax) = (
             *self.constraints.ecl().start(),
             *self.constraints.ecl().end(),
         );
 
-        // Binary search the most conservative version and ecl pair based on constraints
+        // Binary search the most conservative version and ecl pair based on constraints.
         let mut info = QrInfo::new(version_midpoint(vmin, vmax), emin);
         let encoding_len = loop {
             let encoding_len = segments
                 .iter()
                 .map(|segment| info.predict_segment_encoding_len(segment.mode(), segment.len()))
                 .sum();
+            // Can the current choice fit the data?
             if encoding_len <= info.num_data_bits() {
-                // This combination works, check if version can be any smaller
-                if info.version() > vmin && info.version() < vmax {
+                // This combination works, but check if version can be any smaller before confirming this as a choice.
+                if vmin < info.version() && info.version() < vmax {
                     vmax = info.version();
                 } else {
                     break encoding_len;
                 }
             } else {
-                // This combination doesn't work, check if version can be any larger
+                // This combination doesn't work, check if version can be any larger and try again.
                 if info.version() < vmax {
                     vmin = info.version();
                 } else {
@@ -81,95 +155,46 @@ impl Encoder {
                     });
                 }
             }
-            // Update version for next iteration
+            // Update version for next iteration.
             let vmid = version_midpoint(vmin, vmax);
             // When vmin - vmax == 1, the midpoint is vmin because of integer divisions, resulting in an infinite loop.
             // Catch this condition which is recognizable when v is not changing anymore.
             let vnext = if vmid != info.version() { vmid } else { vmax };
             info.set_version(vnext);
         };
-        // Now pick the highest possible ECL given the chosen version
+        // Now pick the highest possible ECL given the chosen version.
         info.set_ecl(emin);
         let mut last_valid_ecl;
         while info.ecl() < emax {
             last_valid_ecl = info.ecl();
+            // Try the next higher ECL and see if it can still fit the data.
             info.set_ecl(info.ecl().higher().unwrap_or(Ecl::H));
             let available_space_with_ecl = info.num_data_bits();
             if available_space_with_ecl < encoding_len {
-                // The previous ecl was the limit
+                // The previous ECL was the limit.
                 info.set_ecl(last_valid_ecl);
                 return Ok(info);
             }
         }
-        // All error correction levels were valid
+        // All error correction levels were valid, including the last tested one.
         Ok(info)
-    }
-
-    /// Segment input `data` according to the provided constraints.
-    pub(crate) fn segment<'a>(&'a self, data: &'a [u8]) -> Result<Vec<Segment<'a>>, EncodingError> {
-        // Get the mode groups and compress them.
-        let groups = self.assign_modes_and_group(data)?;
-        let compressed = self.compress_mode_groups(groups);
-        // Check whether we have multiple modes and if that's allowed by the constraint and act accordingly.
-        match (compressed.len(), self.constraints.mode()) {
-            (0, _) => {
-                unreachable!("there must be at least 1 group")
-            }
-            (1, _) => {
-                // All data was assigned to a single mode.
-                let mode = compressed[0].mode;
-                debug_assert_eq!(data.len(), compressed[0].len);
-                Ok(vec![Segment::new(data, mode)])
-            }
-            (2.., ModeConstraint::AnyMixed | ModeConstraint::TryOrPromoteMixed(_)) => {
-                // There are multiple modes being used and that's allowed: freely collect segments from groups.
-                let mut segments = Vec::with_capacity(compressed.len());
-                let mut idx_start = 0;
-                for blueprint in compressed {
-                    segments.push(Segment::new(
-                        &data[idx_start..(idx_start + blueprint.len)],
-                        blueprint.mode,
-                    ));
-                    idx_start += blueprint.len;
-                }
-                debug_assert_eq!(data.len(), idx_start);
-                Ok(segments)
-            }
-            (2.., ModeConstraint::AnySingle | ModeConstraint::TryOrPromoteSingle(_)) => {
-                // There are multiple modes being used, and that's not allowed; but we are allowed to promote. Promote
-                // everything to a single, most generic mode.
-                let first_mode = compressed[0].mode;
-                let most_generic = compressed
-                    .into_iter()
-                    .map(|blueprint| blueprint.mode)
-                    .fold(first_mode, |curr_most_generic, mode| {
-                        mode.most_generic(curr_most_generic)
-                    });
-                Ok(vec![Segment::new(data, most_generic)])
-            }
-            (2.., ModeConstraint::TryOrFail(_)) => {
-                // There is a hard constraint on the mode, so we would have failed earlier if we generated any mode
-                // other than the constraint.
-                unreachable!("there cannot be multiple modes with a hard constraint")
-            }
-        }
     }
 
     /// Assign the most restrictive segment mode to each byte, then group contiguous mode into `(mode, count)` pairs.
     fn assign_modes_and_group(&self, data: &[u8]) -> Result<Vec<SegmentBlueprint>, EncodingError> {
-        /// Review `mode` based on `constraint`.
+        /// Review `mode` based on `constraint` and either return a compliant mode or an error.
         fn review(mode: Mode, constraint: ModeConstraint) -> Result<Mode, EncodingError> {
+            use ModeConstraint as Constr;
             match constraint {
-                ModeConstraint::AnyMixed | ModeConstraint::AnySingle => {
-                    // Any mode is acceptable. Mixing will be dealt with later.
+                Constr::AnyMixed | Constr::AnySingle => {
+                    // Any mode is acceptable. Mixing modes will be dealt with later.
                     Ok(mode)
                 }
-                ModeConstraint::TryOrPromoteMixed(constr)
-                | ModeConstraint::TryOrPromoteSingle(constr) => {
+                Constr::TryOrPromoteMixed(constr) | Constr::TryOrPromoteSingle(constr) => {
                     // Use the most generic between `mode` and `constr`. Mixing modes will be dealt with later.
                     Ok(mode.most_generic(constr))
                 }
-                ModeConstraint::TryOrFail(constr) => {
+                Constr::TryOrFail(constr) => {
                     // There is a hard constraint. If it is possible to use the constraint (because it is equal to the
                     // proposed mode, or it is more generic), then do so; otherwise return an error.
                     if constr.is_eq_or_more_generic(mode) {
@@ -182,11 +207,10 @@ impl Encoder {
         }
 
         // Assign (and review) the strictest possible mode to each byte.
-        let modes: Result<Vec<Mode>, EncodingError> = data
+        let modes: Vec<Mode> = data
             .iter()
             .map(|&byte| review(Mode::strictest(byte), self.constraints.mode()))
-            .collect();
-        let modes = modes?;
+            .collect::<Result<_, _>>()?;
         // Group by common mode.
         let groups: Vec<SegmentBlueprint> = modes
             .into_iter()
@@ -197,10 +221,10 @@ impl Encoder {
         Ok(groups)
     }
 
-    fn compress_mode_groups(&self, groups: Vec<SegmentBlueprint>) -> Vec<SegmentBlueprint> {
+    fn compress_mode_groups(&self, blueprints: Vec<SegmentBlueprint>) -> Vec<SegmentBlueprint> {
         // Only compress when meaningful.
-        if groups.len() <= 1 {
-            return groups;
+        if blueprints.len() <= 1 {
+            return blueprints;
         }
 
         // TODO: this should be improved. The number of character count bits depends on which of 3 ranges the version
@@ -209,16 +233,15 @@ impl Encoder {
         // For now, let's just use the biggest possible version since the overhead will be the largest. This is
         // sub-optimal.
         let info = QrInfo::new(*self.constraints.version().start(), Ecl::L);
-        let mut compressed = Vec::with_capacity(groups.len());
+        let mut compressed = Vec::with_capacity(blueprints.len());
 
-        let mut groups_iter = groups.into_iter();
-        let mut curr = groups_iter.next().unwrap();
-        for group in groups_iter {
+        let mut bps_iter = blueprints.into_iter();
+        let mut curr = bps_iter.next().unwrap();
+        for bp in bps_iter {
             // Determine whether it's beneficial to merge the current group to the new one.
             let unmerged_size = info.predict_segment_encoding_len(curr.mode, curr.len)
-                + info.predict_segment_encoding_len(group.mode, group.len);
-
-            let merged = curr.merge(&group);
+                + info.predict_segment_encoding_len(bp.mode, bp.len);
+            let merged = curr.merge(&bp);
             let merged_size = info.predict_segment_encoding_len(merged.mode, merged.len);
             if merged_size <= unmerged_size {
                 // Merging is convenient.
@@ -226,7 +249,7 @@ impl Encoder {
             } else {
                 // Merging is not convenient: push the current segment blueprint.
                 compressed.push(curr);
-                curr = group;
+                curr = bp;
             }
         }
         // Push the last group.
