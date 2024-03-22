@@ -3,7 +3,10 @@ pub mod encoder;
 
 use std::ops::{Bound, RangeBounds, RangeInclusive};
 
-use crate::*;
+use crate::{
+    info::Segment,
+    {Ecl, Mask, MaskTable, Mode, QrCode, QrInfo, Version},
+};
 pub use encoder::Encoder;
 
 // Constraints =========================================================================================================
@@ -24,7 +27,7 @@ pub struct EncodingConstraints {
     version: RangeInclusive<Version>,
     ecl: RangeInclusive<Ecl>,
     mode: ModeConstraint,
-    masks: [bool; Mask::NMASKS],
+    masks: MaskTable<bool>,
 }
 
 impl EncodingConstraints {
@@ -53,7 +56,7 @@ impl EncodingConstraints {
             version: Version::V1..=Version::V40,
             ecl: Ecl::L..=Ecl::H,
             mode: ModeConstraint::AnyMixed,
-            masks: [true; 8],
+            masks: MaskTable::filled(true),
         }
     }
 
@@ -138,12 +141,12 @@ impl EncodingConstraints {
     /// ```rust
     /// use qrab::{EncodingConstraints, Mask};
     /// let constraints = EncodingConstraints::new().with_mask_in([Mask::M010, Mask::M111]);
-    /// assert_eq!(constraints.masks(), &[false, false, true, false, false, false, false, true]);
+    /// assert_eq!(constraints.masks(), &[false, false, true, false, false, false, false, true].into());
     /// ```
     pub fn with_mask_in<I: IntoIterator<Item = Mask>>(mut self, values: I) -> Self {
         self.masks.fill(false);
         for mask in values {
-            self.masks[mask.code() as usize] = true;
+            self.masks[mask] = true;
         }
         self
     }
@@ -165,7 +168,7 @@ impl EncodingConstraints {
 
     /// Get the current constraint on QR masks, where the output is an array where the `i`th entry is true if the `i`th
     /// mask is accepted.
-    pub fn masks(&self) -> &[bool; Mask::NMASKS] {
+    pub fn masks(&self) -> &MaskTable<bool> {
         &self.masks
     }
 }
@@ -207,7 +210,7 @@ impl ModeConstraint {
 pub enum EncodingError {
     /// Data is too long for the encoder constraints.
     #[error(
-        "the best possible encoding under the version {ver_constr:?} and error correction level {ecl_constr:?} constraints \
+    "the best possible encoding under the version {ver_constr:?} and error correction level {ecl_constr:?} constraints \
         cannot fit the input data."
     )]
     DataTooLong {

@@ -1,25 +1,25 @@
-use bitvec::prelude::*;
-
-use crate::{
-    info::QrInfo,
-    qrcode::{Matrix, Module},
-    Ecl, EncodingConstraints, EncodingError, Mask, QrCode, Version,
+use bitvec::{
+    prelude::{BitSlice, BitVec, Lsb0, Msb0},
+    view::BitView,
 };
 
-pub(crate) struct Builder<'b> {
-    info: &'b QrInfo,
-    constraints: &'b EncodingConstraints,
+use super::{Ecl, EncodingConstraints, EncodingError, Mask, MaskTable, QrCode, QrInfo, Version};
+use crate::{Matrix, Module};
+
+pub(crate) struct Builder<'a> {
+    info: &'a QrInfo,
+    masks: &'a MaskTable<bool>,
     matrix: Matrix,
 }
 
-impl<'b> Builder<'b> {
+impl<'a> Builder<'a> {
     const RESERVED_MODULE: Module = Matrix::DEFAULT_MODULE_COLOR.toggled();
 
     /// Construct a new builder.
-    pub fn new(info: &'b QrInfo, constraints: &'b EncodingConstraints) -> Self {
+    pub fn new(info: &'a QrInfo, constraints: &'a EncodingConstraints) -> Self {
         Self {
             info,
-            constraints,
+            masks: constraints.masks(),
             matrix: Matrix::new(info.symbol_size()),
         }
     }
@@ -150,7 +150,7 @@ impl<'b> Builder<'b> {
 
     fn pick_mask(&self) -> Result<Mask, EncodingError> {
         // Score available masks and choose the one with the smallest penalty.
-        let evaluator = MaskEvaluator::new(self.constraints.masks());
+        let evaluator = MaskEvaluator::new(self.masks);
         let penalties = evaluator.score_masks(self.matrix.clone());
         let chosen_code_penalty = penalties
             .into_iter()
@@ -349,7 +349,7 @@ impl<'b> Builder<'b> {
 
 /// Penalty calculator for all the available masks that can be applied to a matrix.
 struct MaskEvaluator<'m> {
-    mask_enables: &'m [bool; Mask::NMASKS],
+    mask_enables: &'m MaskTable<bool>,
 }
 
 impl<'m> MaskEvaluator<'m> {
@@ -360,18 +360,17 @@ impl<'m> MaskEvaluator<'m> {
 
     /// Create a new evaluator with the selected `mask_enables`, where `mask_enables[i] == true` if
     /// the mask with code `i` should be enabled.
-    pub fn new(mask_enables: &'m [bool; Mask::NMASKS]) -> Self {
+    pub fn new(mask_enables: &'m MaskTable<bool>) -> Self {
         Self { mask_enables }
     }
 
     /// Assign a penalty score to each active mask.
-    pub fn score_masks(self, mut matrix: Matrix) -> [Option<u32>; Mask::NMASKS] {
-        let mut scores = [None; Mask::NMASKS];
-        for (code, score) in scores.iter_mut().enumerate() {
-            if !self.mask_enables[code] {
+    pub fn score_masks(self, mut matrix: Matrix) -> MaskTable<Option<u32>> {
+        let mut scores = MaskTable::filled(None);
+        for (mask, score) in scores.iter_mut() {
+            if !self.mask_enables[mask] {
                 continue;
             }
-            let mask = Mask::try_from(code as u8).expect("Iterating through valid mask codes");
             matrix.mask(mask);
             let mut new_score = 0;
             // Score penalties that are not defined by rows and columns.

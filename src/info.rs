@@ -439,9 +439,6 @@ pub enum Mask {
 }
 
 impl Mask {
-    /// Total number of existing masks.
-    pub const NMASKS: usize = 8;
-
     pub fn code(&self) -> u8 {
         *self as u8
     }
@@ -486,6 +483,126 @@ pub struct InvalidMaskCode(pub u8);
 impl std::fmt::Debug for InvalidMaskCode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// Total number of existing masks.
+const NMASKS: usize = 8;
+
+/// Statically allocated table indexed by `Mask`s.
+/// # Examples
+/// ```rust
+/// use qrab::{Mask, MaskTable};
+/// let mut table = MaskTable::filled("boring");
+/// table[Mask::M010] = "this is special";
+/// table[Mask::M101] = "this one too";
+/// assert_eq!(table[Mask::M000], "boring");
+/// assert_eq!(table[Mask::M010], "this is special");
+/// assert_eq!(table[Mask::M101], "this one too");
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaskTable<T> {
+    values: [T; NMASKS],
+}
+
+impl<T> MaskTable<T> {
+    const EXPECTED_MASK_ERR: &'static str = "iterating through valid mask codes";
+
+    /// Get a reference to the item associated to `mask`.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{Mask, MaskTable};
+    /// let table = MaskTable::from(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+    /// assert_eq!(table.get(Mask::M000), &'a');
+    /// assert_eq!(table.get(Mask::M111), &'h');
+    /// ```
+    pub fn get(&self, mask: Mask) -> &T {
+        &self.values[mask.code() as usize]
+    }
+
+    /// Get a mutable reference to the item associated to `mask`.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{Mask, MaskTable};
+    /// let mut table = MaskTable::from(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+    /// *table.get_mut(Mask::M111) = 'z';
+    /// assert_eq!(table.get(Mask::M000), &'a');
+    /// assert_eq!(table.get(Mask::M111), &'z');
+    /// ```
+    pub fn get_mut(&mut self, mask: Mask) -> &mut T {
+        &mut self.values[mask.code() as usize]
+    }
+
+    /// Get an iterator over the pairs `(mask, value)` of this table.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{Mask, MaskTable};
+    /// let table = MaskTable::from(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+    /// let mut iter = table.iter();
+    /// assert_eq!(iter.next(), Some((Mask::M000, &'a')));
+    /// assert_eq!(iter.next(), Some((Mask::M001, &'b')));
+    /// assert_eq!(iter.nth(5), Some((Mask::M111, &'h')));
+    /// assert_eq!(iter.next(), None);
+    /// ```
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (Mask, &T)> {
+        self.values
+            .iter()
+            .enumerate()
+            .map(|(i, val)| (Mask::try_from(i as u8).expect(Self::EXPECTED_MASK_ERR), val))
+    }
+
+    pub fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = (Mask, &mut T)> {
+        self.values.iter_mut().enumerate().map(|(i, val_mut)| {
+            (
+                Mask::try_from(i as u8).expect(Self::EXPECTED_MASK_ERR),
+                val_mut,
+            )
+        })
+    }
+
+    pub fn values(&self) -> impl ExactSizeIterator<Item = &T> {
+        self.values.iter()
+    }
+}
+
+impl<T: Clone> MaskTable<T> {
+    pub fn filled(value: T) -> Self {
+        Self {
+            values: std::array::from_fn(|_| value.clone()),
+        }
+    }
+
+    pub fn fill(&mut self, value: T) {
+        self.values.fill(value)
+    }
+}
+
+impl<T> From<[T; NMASKS]> for MaskTable<T> {
+    fn from(value: [T; NMASKS]) -> Self {
+        Self { values: value }
+    }
+}
+
+impl<T> IntoIterator for MaskTable<T> {
+    type Item = T;
+    type IntoIter = std::array::IntoIter<T, NMASKS>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.into_iter()
+    }
+}
+
+impl<T> std::ops::Index<Mask> for MaskTable<T> {
+    type Output = T;
+
+    fn index(&self, index: Mask) -> &Self::Output {
+        self.get(index)
+    }
+}
+
+impl<T> std::ops::IndexMut<Mask> for MaskTable<T> {
+    fn index_mut(&mut self, index: Mask) -> &mut Self::Output {
+        self.get_mut(index)
     }
 }
 
