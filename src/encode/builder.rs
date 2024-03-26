@@ -3,24 +3,25 @@ use bitvec::{
     view::BitView,
 };
 
+use itertools::Itertools;
+
 use super::{Ecl, EncodingConstraints, EncodingError, Mask, MaskTable, QrCode, QrInfo, Version};
+use crate::qrcode::MatrixDataSlice;
 use crate::{Matrix, Module};
 
 pub(crate) struct Builder<'a> {
     info: &'a QrInfo,
     masks: &'a MaskTable<bool>,
-    matrix: Matrix,
+    matrix: Matrix<Module>,
 }
 
 impl<'a> Builder<'a> {
-    const RESERVED_MODULE: Module = Matrix::DEFAULT_MODULE_COLOR.toggled();
-
     /// Construct a new builder.
     pub fn new(info: &'a QrInfo, constraints: &'a EncodingConstraints) -> Self {
         Self {
             info,
             masks: constraints.masks(),
-            matrix: Matrix::new(info.symbol_size()),
+            matrix: Matrix::filled(Module::Light, info.symbol_size()),
         }
     }
 
@@ -61,86 +62,16 @@ impl<'a> Builder<'a> {
     /// Mark modules that belong to reserved areas (like locator patterns, functional info, ...) on a blank matrix.
     /// These modules will be set to `~Matrix::DEFAULT_MODULE_COLOR` for simple checking when placing the data
     /// modules.
-    fn mark_reserved_areas(&mut self) {
-        fn mark_reserved_rect(
-            builder: &mut Builder,
-            i: usize,
-            j: usize,
-            height: usize,
-            width: usize,
-        ) {
-            builder.fill_rect(Builder::RESERVED_MODULE, i, j, height, width);
-        }
-
-        let edge = self.size() - 1;
-        // Timing patterns
-        const TIMING_PATTERN_POS: usize = 6;
-        mark_reserved_rect(self, TIMING_PATTERN_POS, 0, 1, self.size());
-        mark_reserved_rect(self, 0, TIMING_PATTERN_POS, self.size(), 1);
-
-        // Locator patterns
-        const LOCATOR_PATTERN_SIZE: usize = 1 + 1 + 3 + 1 + 1;
-        const LOCATOR_SPACING_SIZE: usize = 1;
-        const LOCATOR_TOT_SIZE: usize = LOCATOR_PATTERN_SIZE + LOCATOR_SPACING_SIZE;
-        mark_reserved_rect(self, 0, 0, LOCATOR_TOT_SIZE, LOCATOR_TOT_SIZE);
-        mark_reserved_rect(
-            self,
-            self.size() - LOCATOR_TOT_SIZE,
-            0,
-            LOCATOR_TOT_SIZE,
-            LOCATOR_TOT_SIZE,
-        );
-        mark_reserved_rect(
-            self,
-            0,
-            self.size() - LOCATOR_TOT_SIZE,
-            LOCATOR_TOT_SIZE,
-            LOCATOR_TOT_SIZE,
-        );
-
-        // Alignment patterns
-        for (i, j) in self.info.alignment_pattern_coordinates() {
-            mark_reserved_rect(self, i, j, 5, 5);
-        }
-
-        // Format information (includes the always dark module)
-        const FINFO_OFFSET: usize = LOCATOR_TOT_SIZE;
-        mark_reserved_rect(self, FINFO_OFFSET, 0, 1, 9);
-        mark_reserved_rect(self, FINFO_OFFSET, edge - 7, 1, 8);
-        mark_reserved_rect(self, 0, FINFO_OFFSET, 8, 1);
-        mark_reserved_rect(self, edge - 7, FINFO_OFFSET, 8, 1);
-
-        // Version information
-        if self.info.version() >= Version::V7 {
-            const VINFO_WIDTH: usize = 3;
-            const VINFO_HEIGHT: usize = 6;
-            mark_reserved_rect(
-                self,
-                0,
-                self.size() - LOCATOR_TOT_SIZE - VINFO_WIDTH,
-                VINFO_HEIGHT,
-                VINFO_WIDTH,
-            );
-            mark_reserved_rect(
-                self,
-                self.size() - LOCATOR_TOT_SIZE - VINFO_WIDTH,
-                0,
-                VINFO_WIDTH,
-                VINFO_HEIGHT,
-            );
-        }
-    }
 
     fn place_codewords(&mut self, codewords: Vec<u8>) {
-        // Mark reserved areas
-        self.mark_reserved_areas();
-        // Iterate on bits and place corresponding modules on nonreserved indices
+        // Map reserved areas.
+        let reserved = self.info.map_reserved_areas();
+        // Iterate on bits and place corresponding modules on nonreserved indices.
         let bv: BitVec<u8, Msb0> = BitVec::from_vec(codewords);
         let mut indices = crate::qrcode::IndexSequenceIter::new(self.size());
         for bit in bv {
             // Get the next non-reserved index
-            let next_unreserved_index =
-                indices.find(|(i, j)| self.matrix[(*i, *j)] != Self::RESERVED_MODULE);
+            let next_unreserved_index = indices.find(|&(i, j)| !reserved.get(i, j).unwrap());
             let Some(index) = next_unreserved_index else {
                 break;
             };
@@ -173,7 +104,7 @@ impl<'a> Builder<'a> {
 
     /// Fill a rectangle with its top-left corner in `(i0, j0)` and specified `height` and `width`.
     fn fill_rect(&mut self, module: Module, i0: usize, j0: usize, height: usize, width: usize) {
-        self.matrix.fill(module, i0, j0, height, width)
+        self.matrix.fill_rect(module, i0, j0, height, width)
     }
 
     /// Fill a square with its top-left corner in `(i0, j0)` and specified `size`.
@@ -364,8 +295,16 @@ impl<'m> MaskEvaluator<'m> {
         Self { mask_enables }
     }
 
+    fn groups_in_row(row: &MatrixDataSlice<Module>) -> Vec<(Module, usize)> {
+        row.iter()
+            .group_by(|module| *module)
+            .into_iter()
+            .map(|(module, group)| (module, group.count()))
+            .collect()
+    }
+
     /// Assign a penalty score to each active mask.
-    pub fn score_masks(self, mut matrix: Matrix) -> MaskTable<Option<u32>> {
+    pub fn score_masks(self, mut matrix: Matrix<Module>) -> MaskTable<Option<u32>> {
         let mut scores = MaskTable::filled(None);
         for (mask, score) in scores.iter_mut() {
             if !self.mask_enables[mask] {
@@ -378,10 +317,10 @@ impl<'m> MaskEvaluator<'m> {
             new_score += self.score_blocks(&matrix);
             // Score row/column penalties by looking at rows first, then transposing to look at columns.
             for i in 0..2 {
-                new_score += self.score_same_color_strikes(&matrix);
+                new_score += self.score_same_color_groups(&matrix);
                 new_score += self.score_locators(&matrix);
                 if i == 0 {
-                    matrix = matrix.transpose();
+                    matrix.transpose();
                 }
             }
             *score = Some(new_score);
@@ -389,13 +328,13 @@ impl<'m> MaskEvaluator<'m> {
         scores
     }
 
-    /// Update score based on contiguous strikes of the same module color in rows and columns.
-    fn score_same_color_strikes(&self, matrix: &Matrix) -> u32 {
+    /// Update score based on contiguous groups of the same module color in rows and columns.
+    fn score_same_color_groups(&self, matrix: &Matrix<Module>) -> u32 {
         let mut score = 0;
-        for i in 0..matrix.size() {
-            for (_, strike_len) in matrix.strikes_in_row(i) {
-                if strike_len >= 5 {
-                    score += MaskEvaluator::PENALTY_LINE_SAME_COLOR + strike_len as u32 - 5;
+        for row in matrix.rows() {
+            for (_, group_len) in Self::groups_in_row(&row) {
+                if group_len >= 5 {
+                    score += MaskEvaluator::PENALTY_LINE_SAME_COLOR + group_len as u32 - 5;
                 }
             }
         }
@@ -403,16 +342,16 @@ impl<'m> MaskEvaluator<'m> {
     }
 
     /// Update scores based on the proportion of dark to light modules.
-    fn score_proportions(&self, matrix: &Matrix) -> u32 {
+    fn score_proportions(&self, matrix: &Matrix<Module>) -> u32 {
         let tot_modules = (matrix.size() * matrix.size()) as u32;
-        let percentage_dark = (matrix.num_dark_modules() as u32 * 100) / tot_modules;
+        let percentage_dark = (matrix.count(Module::Dark) as u32 * 100) / tot_modules;
         let dist_from_50 = percentage_dark.abs_diff(50);
         // Add Self::PENALTY_PROPORTION for every 5% away from 50%. The `saturating_sub` is because 55% should still add
         // no penalty, whereas 56% should start adding it.
         Self::PENALTY_PROPORTION * (dist_from_50.saturating_sub(1) / 5)
     }
 
-    fn score_blocks(&self, matrix: &Matrix) -> u32 {
+    fn score_blocks(&self, matrix: &Matrix<Module>) -> u32 {
         let mut score = 0;
         for i in 0..(matrix.size() - 1) {
             for j in 0..(matrix.size() - 1) {
@@ -428,18 +367,18 @@ impl<'m> MaskEvaluator<'m> {
         score
     }
 
-    fn score_locators(&self, matrix: &Matrix) -> u32 {
+    fn score_locators(&self, matrix: &Matrix<Module>) -> u32 {
         const PATTERN_LEN: usize = 5;
         const PATTERN: [usize; PATTERN_LEN] = [1, 1, 3, 1, 1];
         const FULL_WINDOW_LEN: usize = PATTERN_LEN + 1;
         const MIN_SPACER_LEN: usize = 5;
         const SPACER_COLOR: Module = Module::Light;
         let mut score = 0;
-        for i in 0..matrix.size() {
-            // Collapse row into color strikes.
-            let strikes = matrix.strikes_in_row(i);
+        for row in matrix.rows() {
+            // Collapse row into color groups.
+            let groups = Self::groups_in_row(&row);
             // Look for a locator pattern's proportions preceded or followed by 4 light modules.
-            for window in strikes.windows(FULL_WINDOW_LEN) {
+            for window in groups.windows(FULL_WINDOW_LEN) {
                 let (first, last) = (window[0], window[FULL_WINDOW_LEN - 1]);
                 // Check whether the spacer is the first or the last element of the window.
                 let candidate_pattern = if first.0 == SPACER_COLOR && first.1 >= MIN_SPACER_LEN {
