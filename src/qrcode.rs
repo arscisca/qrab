@@ -262,13 +262,13 @@ impl<T: From<bool> + Into<bool>> Matrix<T> {
 
     /// Get a reference to the `i`th row of the matrix.
     fn row(&self, i: usize) -> Option<MatrixDataSlice<T>> {
-        let range = self.linear_index(i, 0)?..self.linear_index(i, self.size())?;
+        let range = self.linear_index(i, 0)?..=self.linear_index(i, self.size() - 1)?;
         self.data.get(range).map(Into::into)
     }
 
     /// Get a mutable reference to the `i`th row of the matrix.
     fn row_mut(&mut self, i: usize) -> Option<MatrixDataSliceMut<T>> {
-        let range = self.linear_index(i, 0)?..self.linear_index(i, self.size())?;
+        let range = self.linear_index(i, 0)?..=self.linear_index(i, self.size() - 1)?;
         self.data.get_mut(range).map(Into::into)
     }
 
@@ -326,6 +326,19 @@ impl<'a, T: From<bool> + Into<bool>> From<&'a BitSlice> for MatrixDataSlice<'a, 
             _phantom: PhantomData,
             slice: value,
         }
+    }
+}
+
+impl<'a, T: std::fmt::Debug + From<bool> + Into<bool>> std::fmt::Debug for MatrixDataSlice<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (i, item) in self.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{:?}", item)?;
+        }
+        write!(f, "]")
     }
 }
 
