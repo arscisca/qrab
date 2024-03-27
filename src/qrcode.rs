@@ -142,7 +142,7 @@ impl From<Module> for bool {
 }
 
 // Matrix ==============================================================================================================
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Matrix<T> {
     _phantom: PhantomData<T>,
     data: BitVec,
@@ -210,7 +210,9 @@ impl<T: From<bool> + Into<bool>> Matrix<T> {
     pub fn transpose(&mut self) {
         for i in 0..self.size {
             for j in (i + 1)..self.size {
-                self.data.swap(i, j);
+                let index1 = self.linear_index_unchecked(i, j);
+                let index2 = self.linear_index_unchecked(j, i);
+                self.data.swap(index1, index2);
             }
         }
     }
@@ -261,7 +263,7 @@ impl<T: From<bool> + Into<bool>> Matrix<T> {
     }
 
     /// Get a reference to the `i`th row of the matrix.
-    fn row(&self, i: usize) -> Option<MatrixDataSlice<T>> {
+    pub fn row(&self, i: usize) -> Option<MatrixDataSlice<T>> {
         let range = self.linear_index(i, 0)?..=self.linear_index(i, self.size() - 1)?;
         self.data.get(range).map(Into::into)
     }
@@ -273,15 +275,38 @@ impl<T: From<bool> + Into<bool>> Matrix<T> {
     }
 
     /// Get an iterator over the rows of a matrix.
-    pub fn rows(&self) -> impl Iterator<Item = MatrixDataSlice<T>> {
+    pub fn rows(&self) -> impl ExactSizeIterator<Item = MatrixDataSlice<T>> {
         (0..self.size())
             .map(|i| self.row(i))
-            .take_while(Option::is_some)
             .map(Option::unwrap)
     }
 }
 
+impl<const N: usize, T: From<bool> + Into<bool>> From<[[T; N]; N]> for Matrix<T> {
+    fn from(value: [[T; N]; N]) -> Self {
+        let data = BitVec::from_iter(
+            value.into_iter().flatten().map(|value| value.into())
+        );
+        Self {
+            _phantom: PhantomData,
+            data,
+            size: N,
+        }
+    }
+}
+
+impl<T: From<bool> + Into<bool>> std::fmt::Debug for Matrix<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for row in self.rows() {
+            let line: String = row.iter().map(|item| format!("{}", item.into() as u8)).collect();
+            writeln!(f, "|{}|", line)?;
+        }
+        Ok(())
+    }
+}
+
 /// A slice of data from a `Matrix<T>`, usually representing a row or a row's subset of data.
+#[derive(PartialEq, Eq)]
 pub struct MatrixDataSlice<'a, T> {
     _phantom: PhantomData<T>,
     slice: &'a BitSlice,
@@ -329,6 +354,14 @@ impl<'a, T: From<bool> + Into<bool>> From<&'a BitSlice> for MatrixDataSlice<'a, 
     }
 }
 
+impl<'a, T: From<bool> + Into<bool>> IntoIterator for &'a MatrixDataSlice<'a, T> {
+    type Item = T;
+    type IntoIter = MatrixDataIter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 impl<'a, T: std::fmt::Debug + From<bool> + Into<bool>> std::fmt::Debug for MatrixDataSlice<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "[")?;
@@ -339,6 +372,15 @@ impl<'a, T: std::fmt::Debug + From<bool> + Into<bool>> std::fmt::Debug for Matri
             write!(f, "{:?}", item)?;
         }
         write!(f, "]")
+    }
+}
+
+impl<'a, T: From<bool> + Into<bool>> PartialEq<&[bool]> for MatrixDataSlice<'a, T> {
+    fn eq(&self, other: &&[bool]) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        return self.slice.iter().zip(other.iter()).all(|(this, other)| this == other)
     }
 }
 
@@ -522,7 +564,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn toggle() {
+    fn module_toggle() {
         let mut m = Module::Dark;
         m = m.toggled();
         assert_eq!(m, Module::Light);
@@ -532,7 +574,7 @@ mod test {
 
     #[test]
     #[allow(clippy::bool_assert_comparison)]
-    fn bool_conversions() {
+    fn module_bool_conversions() {
         // Conversions are as expected
         assert_eq!(Module::from(false), Module::Light);
         assert_eq!(Module::from(true), Module::Dark);
