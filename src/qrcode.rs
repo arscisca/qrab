@@ -276,17 +276,13 @@ impl<T: From<bool> + Into<bool>> Matrix<T> {
 
     /// Get an iterator over the rows of a matrix.
     pub fn rows(&self) -> impl ExactSizeIterator<Item = MatrixDataSlice<T>> {
-        (0..self.size())
-            .map(|i| self.row(i))
-            .map(Option::unwrap)
+        (0..self.size()).map(|i| self.row(i)).map(Option::unwrap)
     }
 }
 
 impl<const N: usize, T: From<bool> + Into<bool>> From<[[T; N]; N]> for Matrix<T> {
     fn from(value: [[T; N]; N]) -> Self {
-        let data = BitVec::from_iter(
-            value.into_iter().flatten().map(|value| value.into())
-        );
+        let data = BitVec::from_iter(value.into_iter().flatten().map(|value| value.into()));
         Self {
             _phantom: PhantomData,
             data,
@@ -297,8 +293,12 @@ impl<const N: usize, T: From<bool> + Into<bool>> From<[[T; N]; N]> for Matrix<T>
 
 impl<T: From<bool> + Into<bool>> std::fmt::Debug for Matrix<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
         for row in self.rows() {
-            let line: String = row.iter().map(|item| format!("{}", item.into() as u8)).collect();
+            let line = row.iter().fold(String::new(), |mut acc, item| {
+                let _ = write!(acc, "{}", item.into() as u8);
+                acc
+            });
             writeln!(f, "|{}|", line)?;
         }
         Ok(())
@@ -317,7 +317,7 @@ impl<'a, T: From<bool> + Into<bool>> MatrixDataSlice<'a, T> {
     pub fn len(&self) -> usize {
         self.slice.len()
     }
-    
+
     /// Check whether the data slice is empty.
     pub fn is_empty(&self) -> bool {
         self.slice.is_empty()
@@ -380,7 +380,11 @@ impl<'a, T: From<bool> + Into<bool>> PartialEq<&[bool]> for MatrixDataSlice<'a, 
         if self.len() != other.len() {
             return false;
         }
-        return self.slice.iter().zip(other.iter()).all(|(this, other)| this == other)
+        return self
+            .slice
+            .iter()
+            .zip(other.iter())
+            .all(|(this, other)| this == other);
     }
 }
 

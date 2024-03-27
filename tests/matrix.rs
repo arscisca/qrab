@@ -6,7 +6,7 @@ fn test_matrix_get() {
     let matrix = Matrix::from([
         [false, false, false],
         [false, false, false],
-        [false, false, true]
+        [false, false, true],
     ]);
     assert_eq!(matrix.get(0, 0), Some(false));
     assert_eq!(matrix.get(2, 2), Some(true));
@@ -47,7 +47,7 @@ fn test_matrix_transpose() {
     let exp_transposed = [
         [false, false, true],
         [true, false, true],
-        [true, false, false]
+        [true, false, false],
     ];
     matrix.transpose();
     for (i, row) in matrix.rows().enumerate() {
@@ -70,25 +70,34 @@ fn test_matrix_fill() {
     // Basic example.
     let mut matrix = Matrix::filled(Module::Dark, 3);
     matrix.fill_rect(Module::Light, 1, 1, 2, 2);
-    assert_eq!(matrix, Matrix::from([
-        [Module::Dark, Module::Dark, Module::Dark],
-        [Module::Dark, Module::Light, Module::Light],
-        [Module::Dark, Module::Light, Module::Light],
-    ]));
+    assert_eq!(
+        matrix,
+        Matrix::from([
+            [Module::Dark, Module::Dark, Module::Dark],
+            [Module::Dark, Module::Light, Module::Light],
+            [Module::Dark, Module::Light, Module::Light],
+        ])
+    );
     // Fill with start points inside the matrix, but width/height too big. No effect.
     matrix.fill_rect(Module::Dark, 2, 2, 100, 100);
-    assert_eq!(matrix, Matrix::from([
-        [Module::Dark, Module::Dark, Module::Dark],
-        [Module::Dark, Module::Light, Module::Light],
-        [Module::Dark, Module::Light, Module::Light],
-    ]));
+    assert_eq!(
+        matrix,
+        Matrix::from([
+            [Module::Dark, Module::Dark, Module::Dark],
+            [Module::Dark, Module::Light, Module::Light],
+            [Module::Dark, Module::Light, Module::Light],
+        ])
+    );
     // Fill with the start point outside the matrix. No effect.
     matrix.fill_rect(Module::Light, 100, 100, 100, 100);
-    assert_eq!(matrix, Matrix::from([
-        [Module::Dark, Module::Dark, Module::Dark],
-        [Module::Dark, Module::Light, Module::Light],
-        [Module::Dark, Module::Light, Module::Light],
-    ]));
+    assert_eq!(
+        matrix,
+        Matrix::from([
+            [Module::Dark, Module::Dark, Module::Dark],
+            [Module::Dark, Module::Light, Module::Light],
+            [Module::Dark, Module::Light, Module::Light],
+        ])
+    );
     // Empty matrix.
     let mut matrix = Matrix::filled(Module::Light, 0);
     matrix.fill_rect(Module::Dark, 0, 0, 1, 1);
