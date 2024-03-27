@@ -523,6 +523,16 @@ impl IndexSequenceIter {
             || !flowing_up && self.i == self.size as isize - 1 // Flowing down but at the bottom
             || (self.size as isize - 1 - self.j) % 2 == 0 // Even column from the right
     }
+
+    /// The offset caused by the fact that the vertical timing column would cause the zig-zag pattern to collapse into
+    /// a vertical line. Continue the zig-zag, but offset by 1 to the left when the timing column is left.
+    fn timing_column_offset(&self) -> usize {
+        if self.j <= 5 {
+            1
+        } else {
+            0
+        }
+    }
 }
 
 impl Iterator for IndexSequenceIter {
@@ -547,9 +557,12 @@ impl Iterator for IndexSequenceIter {
                 self.i += 1;
             }
         };
-        // If current is valid, return it; otherwise do another step. Temporarily going out of bounds is allowed.as
-        if current.0 >= 0 && current.1 >= 0 {
-            Some((current.0 as usize, current.1 as usize))
+        // If current is valid, return it; otherwise do another step. Temporarily going out of bounds is allowed.
+        if current.0 >= 0 && current.1 >= 1 {
+            Some((
+                current.0 as usize,
+                current.1 as usize - self.timing_column_offset(),
+            ))
         } else {
             self.next()
         }
@@ -624,19 +637,9 @@ mod test {
     }
 
     #[test]
-    fn index_seq_at_left_boundary() {
-        let mut seq = IndexSequenceIter::new(21);
-        // Advance until we reach the left
-        assert_eq!(seq.find(|(_, j)| *j == 0), Some((20, 0)));
-        assert_eq!(seq.next(), Some((19, 0)));
-        assert_eq!(seq.next(), Some((18, 0)));
-        assert_eq!(seq.next(), Some((17, 0)));
-    }
-
-    #[test]
     fn index_seq_last() {
         let mut seq = IndexSequenceIter::new(21);
-        seq.find(|(i, j)| *i == 0 && *j == 0).unwrap();
+        seq.find(|&(i, j)| i == 20 && j == 0).unwrap();
         assert_eq!(seq.next(), None);
     }
 }
