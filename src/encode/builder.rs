@@ -68,12 +68,17 @@ impl<'a> Builder<'a> {
         let reserved = self.info.map_reserved_areas();
         // Iterate on bits and place corresponding modules on nonreserved indices.
         let bv: BitVec<u8, Msb0> = BitVec::from_vec(codewords);
+        let data_len = bv.len();
         let mut indices = crate::qrcode::IndexSequenceIter::new(self.size());
-        for bit in bv {
+        for (i, bit) in bv.into_iter().enumerate() {
             // Get the next non-reserved index
             let next_unreserved_index = indices.find(|&(i, j)| !reserved.get(i, j).unwrap());
             let Some(index) = next_unreserved_index else {
-                break;
+                panic!(
+                    "there is data to place, but no free indices left: failed at bit {} out of {}",
+                    i + 1,
+                    data_len
+                );
             };
             self.matrix.set(index.0, index.1, bit.into());
         }
