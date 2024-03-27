@@ -1,3 +1,4 @@
+use crate::Matrix;
 use itertools::Itertools;
 
 // QrInfo ==============================================================================================================
@@ -242,6 +243,71 @@ impl QrInfo {
                 None
             }
         })
+    }
+
+    /// Create a matrix that contains `true` where a module is reserved for QR code standard format, `false` when it's
+    /// unreserved and usable to store data.
+    pub fn map_reserved_areas(&self) -> Matrix<bool> {
+        let size = self.symbol_size();
+        let edge = size - 1;
+        let mut reserved = Matrix::filled(false, size);
+        // Timing patterns
+        const TIMING_PATTERN_POS: usize = 6;
+        reserved.fill_rect(true, TIMING_PATTERN_POS, 0, 1, size);
+        reserved.fill_rect(true, 0, TIMING_PATTERN_POS, size, 1);
+
+        // Locator patterns
+        const LOCATOR_PATTERN_SIZE: usize = 1 + 1 + 3 + 1 + 1;
+        const LOCATOR_SPACING_SIZE: usize = 1;
+        const LOCATOR_TOT_SIZE: usize = LOCATOR_PATTERN_SIZE + LOCATOR_SPACING_SIZE;
+        reserved.fill_rect(true, 0, 0, LOCATOR_TOT_SIZE, LOCATOR_TOT_SIZE);
+        reserved.fill_rect(
+            true,
+            size - LOCATOR_TOT_SIZE,
+            0,
+            LOCATOR_TOT_SIZE,
+            LOCATOR_TOT_SIZE,
+        );
+        reserved.fill_rect(
+            true,
+            0,
+            size - LOCATOR_TOT_SIZE,
+            LOCATOR_TOT_SIZE,
+            LOCATOR_TOT_SIZE,
+        );
+
+        // Alignment patterns
+        for (i, j) in self.alignment_pattern_coordinates() {
+            reserved.fill_rect(true, i, j, 5, 5);
+        }
+
+        // Format information (includes the always dark module)
+        const FINFO_OFFSET: usize = LOCATOR_TOT_SIZE;
+        reserved.fill_rect(true, FINFO_OFFSET, 0, 1, 9);
+        reserved.fill_rect(true, FINFO_OFFSET, edge - 7, 1, 8);
+        reserved.fill_rect(true, 0, FINFO_OFFSET, 8, 1);
+        reserved.fill_rect(true, edge - 7, FINFO_OFFSET, 8, 1);
+
+        // Version information
+        if self.version() >= Version::V7 {
+            const VINFO_WIDTH: usize = 3;
+            const VINFO_HEIGHT: usize = 6;
+            reserved.fill_rect(
+                true,
+                0,
+                size - LOCATOR_TOT_SIZE - VINFO_WIDTH,
+                VINFO_HEIGHT,
+                VINFO_WIDTH,
+            );
+            reserved.fill_rect(
+                true,
+                size - LOCATOR_TOT_SIZE - VINFO_WIDTH,
+                0,
+                VINFO_WIDTH,
+                VINFO_HEIGHT,
+            );
+        }
+        reserved
     }
 }
 

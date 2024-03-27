@@ -1,5 +1,9 @@
-use bitvec::prelude::{BitSlice, BitVec};
-use itertools::Itertools;
+use std::marker::PhantomData;
+
+use bitvec::{
+    slice::{BitSlice, BitSliceIndex},
+    vec::BitVec,
+};
 
 use super::{
     info::{Ecl, Mask, Version},
@@ -12,14 +16,14 @@ use super::{
 /// Its modules (a.k.a. its pixels) are stored in a compacted form inside a row-major `Matrix`. The most efficient way
 /// to interact with them is
 pub struct QrCode {
-    matrix: Matrix,
+    matrix: Matrix<Module>,
     version: Version,
     ecl: Ecl,
     mask: Mask,
 }
 
 impl QrCode {
-    pub(crate) fn new(matrix: Matrix, version: Version, ecl: Ecl, mask: Mask) -> Self {
+    pub(crate) fn new(matrix: Matrix<Module>, version: Version, ecl: Ecl, mask: Mask) -> Self {
         Self {
             matrix,
             version,
@@ -42,8 +46,15 @@ impl QrCode {
         encoder.encode(data)
     }
 
-    /// Get the module at row `i` and column `j`.
-    pub fn get(&self, i: usize, j: usize) -> &Module {
+    /// Get the module at row `i` and column `j` with a boundary check.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{QrCode, Module};
+    /// let qrcode = QrCode::encode("hello, world!").unwrap();
+    /// assert_eq!(qrcode.get(0, 0), Some(Module::Dark));
+    /// assert!(qrcode.get(qrcode.size() + 1, qrcode.size() + 1).is_none())
+    /// ```
+    pub fn get(&self, i: usize, j: usize) -> Option<Module> {
         self.matrix.get(i, j)
     }
 
@@ -68,11 +79,11 @@ impl QrCode {
     }
 
     /// Get an iterator over the rows of the QrCode.
-    pub fn rows(&self) -> Rows {
+    pub fn rows(&self) -> impl Iterator<Item = MatrixDataSlice<Module>> {
         self.matrix.rows()
     }
 
-    pub fn matrix(&self) -> &Matrix {
+    pub fn matrix(&self) -> &Matrix<Module> {
         &self.matrix
     }
 }
@@ -89,8 +100,8 @@ impl std::fmt::Debug for QrCode {
     }
 }
 
-impl AsRef<Matrix> for QrCode {
-    fn as_ref(&self) -> &Matrix {
+impl AsRef<Matrix<Module>> for QrCode {
+    fn as_ref(&self) -> &Matrix<Module> {
         self.matrix()
     }
 }
@@ -130,103 +141,80 @@ impl From<Module> for bool {
     }
 }
 
-impl AsRef<Module> for bool {
-    fn as_ref(&self) -> &Module {
-        match self {
-            true => &Module::Dark,
-            false => &Module::Light,
-        }
-    }
-}
-
-impl AsRef<bool> for Module {
-    fn as_ref(&self) -> &bool {
-        match self {
-            Module::Dark => &true,
-            Module::Light => &true,
-        }
-    }
-}
-
-impl std::ops::BitXor<bool> for Module {
-    type Output = Module;
-
-    fn bitxor(self, rhs: bool) -> Self::Output {
-        Module::from(bool::from(self) ^ rhs)
-    }
-}
-
 // Matrix ==============================================================================================================
-/// Editable row-major square matrix of QR code modules that may or may not yet qualify as a valid QR code. It can be
-/// used to construct a QR code, to explore its modules and so on.
-#[derive(Clone)]
-pub struct Matrix {
-    modules: BitVec,
+#[derive(Clone, PartialEq, Eq)]
+pub struct Matrix<T> {
+    _phantom: PhantomData<T>,
+    data: BitVec,
     size: usize,
 }
 
-impl Matrix {
-    /// Color of the modules on a newly initialized Matrix.
-    pub const DEFAULT_MODULE_COLOR: Module = Module::Light;
-
-    /// Construct a `Matrix` based on its `size`.
-    pub fn new(size: usize) -> Self {
-        let modules = BitVec::repeat(Self::DEFAULT_MODULE_COLOR.into(), size * size);
-        Self { modules, size }
+impl<T: From<bool> + Into<bool>> Matrix<T> {
+    /// Initialize a `size`x`size` matrix by filling it with `value`.
+    pub fn filled(value: T, size: usize) -> Self {
+        let data = BitVec::repeat(value.into(), size * size);
+        Self {
+            _phantom: PhantomData,
+            data,
+            size,
+        }
     }
 
-    /// Linearize a 2D index `(i, j)` into a 1D index based on the matrix's size.
-    fn linearized_index(&self, i: usize, j: usize) -> usize {
+    /// Linearize a 2D index `(i, j)` into a 1D index with a boundary check to address the matrix data.
+    fn linear_index(&self, i: usize, j: usize) -> Option<usize> {
+        if i < self.size && j < self.size {
+            Some(self.linear_index_unchecked(i, j))
+        } else {
+            None
+        }
+    }
+
+    /// Linearize a 2D index `(i, j)` into a 1D index to address the matrix data.
+    fn linear_index_unchecked(&self, i: usize, j: usize) -> usize {
         i * self.size + j
     }
 
-    /// Get the size (its width or its height) of the matrix.
+    /// Get the size of the matrix.
     pub fn size(&self) -> usize {
         self.size
     }
 
-    /// Get the module at position `(i, j)`.
-    pub fn get(&self, i: usize, j: usize) -> &Module {
-        self.modules[self.linearized_index(i, j)].as_ref()
+    /// Get the item at position `(i, j)` with a boundary check.
+    /// # Example
+    /// ```rust
+    /// use qrab::{Matrix, Module};
+    /// let modules = Matrix::filled(Module::Dark, 3);
+    /// assert_eq!(modules.get(1, 2), Some(Module::Dark));
+    /// assert!(modules.get(10, 10).is_none())
+    /// ```
+    pub fn get(&self, i: usize, j: usize) -> Option<T> {
+        self.data
+            .get(self.linear_index(i, j)?)
+            .map(|bit| (*bit).into())
     }
 
-    /// Set the module at position `(i, j)` to `value`.
+    /// Set the item at position `(i, j)` to `value`.
     pub fn set(&mut self, i: usize, j: usize, value: Module) {
-        let index = self.linearized_index(i, j);
-        self.modules.set(index, value.into());
+        let index = self
+            .linear_index(i, j)
+            .unwrap_or_else(|| panic!("index ({}, {}) is out of bounds", i, j));
+        self.data.set(index, value.into());
     }
 
-    /// Get a `Vec` containing pairs `(Module, usize)` that represent continuous strikes of the same `Module` and their
-    /// length.
-    pub(crate) fn strikes_in_row(&self, row: usize) -> Vec<(Module, usize)> {
-        self.row(row)
-            .into_iter()
-            .group_by(|b| *b)
-            .into_iter()
-            .map(|(key, group)| (key, group.count()))
-            .collect()
-    }
-
-    fn fill_row_chunk(&mut self, value: Module, i: usize, j0: usize, width: usize) {
-        let row_range = (i * self.size)..((i + 1) * self.size);
-        let row = &mut self.modules.as_mut_bitslice()[row_range];
-        let col_range = j0..(j0 + width);
-        row[col_range].fill(value.into());
-    }
-
-    pub fn transpose(self) -> Matrix {
-        let mut transposed = Matrix::new(self.size);
-        // TODO: This can be optimized by working with the bitvec's underlying data rather than raw bits
+    /// Transpose the matrix in place, inverting rows and columns.
+    /// # Examples
+    /// ```rust
+    /// use qrab::{Matrix, Module};
+    /// let mut matrix = Matrix::filled(Module::Dark, 3);
+    /// ```
+    pub fn transpose(&mut self) {
         for i in 0..self.size {
             for j in (i + 1)..self.size {
-                let starting_index = self.linearized_index(i, j);
-                let transposed_index = transposed.linearized_index(j, i);
-                transposed
-                    .modules
-                    .set(transposed_index, self.modules[starting_index]);
+                let index1 = self.linear_index_unchecked(i, j);
+                let index2 = self.linear_index_unchecked(j, i);
+                self.data.swap(index1, index2);
             }
         }
-        transposed
     }
 
     /// Fill the region with its top-left corner in `(i0. j0)` and of sizes `width` and `height` with `value`.
@@ -234,136 +222,275 @@ impl Matrix {
     /// # Examples
     /// ```rust
     /// use qrab::{Matrix, Module};
-    /// // Construct a 10x10 matrix
-    /// let mut m = Matrix::new(10);
-    /// // Fill its bottom right 2x2 corner with dark modules
-    /// m.fill(Module::Dark, 7, 7, 2, 2);
+    /// // Construct a 10x10 matrix filled with light modules.
+    /// let mut matrix = Matrix::filled(Module::Light, 10);
+    /// // Fill its bottom right 2x2 corner with dark modules.
+    /// matrix.fill_rect(Module::Dark, 7, 7, 2, 2);
     /// ```
-    pub fn fill(&mut self, value: Module, i0: usize, j0: usize, height: usize, width: usize) {
+    pub fn fill_rect(&mut self, value: T, i0: usize, j0: usize, height: usize, width: usize) {
+        let bit: bool = value.into();
         for i in i0..(i0 + height) {
-            self.fill_row_chunk(value, i, j0, width);
+            let Some(mut row) = self.row_mut(i) else {
+                break;
+            };
+            let Some(mut range) = row.get_slice_mut(j0..(j0 + width)) else {
+                break;
+            };
+            range.fill(bit);
         }
     }
 
     /// Apply `mask` to toggle the modules in the matrix.
     pub fn mask(&mut self, mask: Mask) {
         let toggle = mask.function();
-        for (i, chunk) in self.modules.chunks_mut(self.size).enumerate() {
-            for (j, mut bit) in chunk.iter_mut().enumerate() {
+        for i in 0..self.size() {
+            for j in 0..self.size() {
                 if toggle(i, j) {
-                    bit.set(!*bit);
+                    let index = self.linear_index_unchecked(i, j);
+                    let original = self.data[index];
+                    self.data.set(index, !original);
                 }
             }
         }
     }
 
-    pub(crate) fn num_dark_modules(&self) -> usize {
-        self.modules.count_ones()
+    /// Count the number of instances of `value`.
+    pub fn count(&self, value: T) -> usize {
+        match value.into() {
+            true => self.data.count_ones(),
+            false => self.data.count_zeros(),
+        }
     }
 
-    /// Get an alias to the `i`th row of the matrix.
-    fn row(&self, i: usize) -> Row {
-        Row {
-            modules: &self.modules[(i * self.size)..((i + 1) * self.size)],
-        }
+    /// Get a reference to the `i`th row of the matrix.
+    pub fn row(&self, i: usize) -> Option<MatrixDataSlice<T>> {
+        let range = self.linear_index(i, 0)?..=self.linear_index(i, self.size() - 1)?;
+        self.data.get(range).map(Into::into)
+    }
+
+    /// Get a mutable reference to the `i`th row of the matrix.
+    fn row_mut(&mut self, i: usize) -> Option<MatrixDataSliceMut<T>> {
+        let range = self.linear_index(i, 0)?..=self.linear_index(i, self.size() - 1)?;
+        self.data.get_mut(range).map(Into::into)
     }
 
     /// Get an iterator over the rows of a matrix.
-    pub fn rows(&self) -> Rows {
-        Rows { i: 0, matrix: self }
+    pub fn rows(&self) -> impl ExactSizeIterator<Item = MatrixDataSlice<T>> {
+        (0..self.size()).map(|i| self.row(i)).map(Option::unwrap)
     }
 }
 
-impl std::ops::Index<(usize, usize)> for Matrix {
-    type Output = Module;
-
-    fn index(&self, index: (usize, usize)) -> &Self::Output {
-        self.get(index.0, index.1)
+impl<const N: usize, T: From<bool> + Into<bool>> From<[[T; N]; N]> for Matrix<T> {
+    fn from(value: [[T; N]; N]) -> Self {
+        let data = BitVec::from_iter(value.into_iter().flatten().map(|value| value.into()));
+        Self {
+            _phantom: PhantomData,
+            data,
+            size: N,
+        }
     }
 }
 
-impl Default for Matrix {
-    fn default() -> Self {
-        Self::new(0)
+impl<T: From<bool> + Into<bool>> std::fmt::Debug for Matrix<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        for row in self.rows() {
+            let line = row.iter().fold(String::new(), |mut acc, item| {
+                let _ = write!(acc, "{}", item.into() as u8);
+                acc
+            });
+            writeln!(f, "|{}|", line)?;
+        }
+        Ok(())
     }
 }
 
-pub struct Row<'r> {
-    modules: &'r BitSlice,
+/// A slice of data from a `Matrix<T>`, usually representing a row or a row's subset of data.
+#[derive(PartialEq, Eq)]
+pub struct MatrixDataSlice<'a, T> {
+    _phantom: PhantomData<T>,
+    slice: &'a BitSlice,
 }
 
-impl<'r> Row<'r> {
+impl<'a, T: From<bool> + Into<bool>> MatrixDataSlice<'a, T> {
+    /// Get the length of the slice.
     pub fn len(&self) -> usize {
-        self.modules.len()
+        self.slice.len()
+    }
+
+    /// Check whether the data slice is empty.
+    pub fn is_empty(&self) -> bool {
+        self.slice.is_empty()
+    }
+
+    /// Get the `i`th element of the slice.
+    pub fn get(&self, i: usize) -> Option<T> {
+        self.slice.get(i).map(|bit| (*bit).into())
+    }
+
+    /// Get a sub-slice defined by `index`.
+    pub fn get_slice<Idx>(&self, index: Idx) -> Option<Self>
+    where
+        Idx: BitSliceIndex<'a, usize, bitvec::order::Lsb0, Immut = &'a BitSlice>,
+    {
+        let slice = self.slice.get(index)?;
+        Some(Self {
+            _phantom: PhantomData,
+            slice,
+        })
+    }
+
+    pub fn iter(&self) -> MatrixDataIter<T> {
+        MatrixDataIter::new(self)
     }
 }
 
-impl<'r> std::ops::Index<usize> for Row<'r> {
-    type Output = Module;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        self.modules[index].as_ref()
+impl<'a, T: From<bool> + Into<bool>> From<&'a BitSlice> for MatrixDataSlice<'a, T> {
+    fn from(value: &'a BitSlice) -> Self {
+        Self {
+            _phantom: PhantomData,
+            slice: value,
+        }
     }
 }
 
-impl<'r> IntoIterator for Row<'r> {
-    type Item = Module;
-    type IntoIter = RowIter<'r>;
-
+impl<'a, T: From<bool> + Into<bool>> IntoIterator for &'a MatrixDataSlice<'a, T> {
+    type Item = T;
+    type IntoIter = MatrixDataIter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        RowIter { i: 0, row: self }
+        self.iter()
     }
 }
 
-pub struct RowIter<'r> {
-    i: usize,
-    row: Row<'r>,
+impl<'a, T: std::fmt::Debug + From<bool> + Into<bool>> std::fmt::Debug for MatrixDataSlice<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (i, item) in self.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{:?}", item)?;
+        }
+        write!(f, "]")
+    }
 }
 
-impl<'r> Iterator for RowIter<'r> {
-    type Item = Module;
+impl<'a, T: From<bool> + Into<bool>> PartialEq<&[bool]> for MatrixDataSlice<'a, T> {
+    fn eq(&self, other: &&[bool]) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        return self
+            .slice
+            .iter()
+            .zip(other.iter())
+            .all(|(this, other)| this == other);
+    }
+}
+
+/// Mutable version of a `MatrixDataSlice<T>`.
+pub struct MatrixDataSliceMut<'a, T> {
+    _phantom: PhantomData<T>,
+    slice: &'a mut BitSlice,
+}
+
+impl<'a, T: From<bool> + Into<bool>> MatrixDataSliceMut<'a, T> {
+    /// Get the length of the slice.
+    pub fn len(&self) -> usize {
+        self.slice.len()
+    }
+
+    /// Check whether the data slice is empty.
+    pub fn is_empty(&self) -> bool {
+        self.slice.is_empty()
+    }
+
+    /// Get the `i`th element.
+    pub fn get(&self, i: usize) -> Option<T> {
+        self.slice.get(i).map(|bit| (*bit).into())
+    }
+
+    /// Set the `i`th element.
+    /// # Panics
+    /// This panics if `i` is out of range.
+    pub fn set(&mut self, i: usize, value: T) {
+        self.slice.set(i, value.into())
+    }
+
+    /// Get an immutable sub-slice of this slice, pointed by `index`.
+    pub fn get_slice<Idx>(&'a self, index: Idx) -> Option<MatrixDataSlice<'a, T>>
+    where
+        Idx: BitSliceIndex<'a, usize, bitvec::order::Lsb0, Immut = &'a BitSlice>,
+    {
+        let slice = self.slice.get(index)?;
+        Some(MatrixDataSlice {
+            _phantom: PhantomData,
+            slice,
+        })
+    }
+
+    /// Get a mutable sub-slice of this slice, pointed by `index`.
+    pub fn get_slice_mut<Idx>(&'a mut self, index: Idx) -> Option<Self>
+    where
+        Idx: BitSliceIndex<'a, usize, bitvec::order::Lsb0, Mut = &'a mut BitSlice>,
+    {
+        let slice = self.slice.get_mut(index)?;
+        Some(Self {
+            _phantom: PhantomData,
+            slice,
+        })
+    }
+
+    /// Fill the slice with `value`, which may be of type `T` or any type that converts to a `bool`.
+    pub fn fill<U: Into<bool>>(&mut self, value: U) {
+        self.slice.fill(value.into());
+    }
+}
+
+impl<'a, T: From<bool> + Into<bool>> From<&'a mut BitSlice> for MatrixDataSliceMut<'a, T> {
+    fn from(value: &'a mut BitSlice) -> Self {
+        Self {
+            _phantom: PhantomData,
+            slice: value,
+        }
+    }
+}
+
+/// Iterator over the elements of a `Matrix<T>`, yielding its elements row-wise.
+pub struct MatrixDataIter<'a, T> {
+    slice: &'a MatrixDataSlice<'a, T>,
+    i: usize,
+}
+
+impl<'a, T: From<bool> + Into<bool>> MatrixDataIter<'a, T> {
+    fn new(slice: &'a MatrixDataSlice<T>) -> Self {
+        Self { slice, i: 0 }
+    }
+}
+
+impl<'a, T: From<bool> + Into<bool>> Iterator for MatrixDataIter<'a, T> {
+    type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let i = self.i;
-        if i < self.row.len() {
-            self.i += 1;
-            Some(self.row[i])
-        } else {
-            None
-        }
+        let result = self.slice.get(self.i)?;
+        self.i += 1;
+        Some(result)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.row.len(), Some(self.row.len()))
+        (self.len(), Some(self.len()))
     }
 }
 
-impl<'r> ExactSizeIterator for RowIter<'r> {}
-
-pub struct Rows<'r> {
-    matrix: &'r Matrix,
-    i: usize,
-}
-
-impl<'r> Iterator for Rows<'r> {
-    type Item = Row<'r>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let i = self.i;
-        if i < self.matrix.size() {
-            self.i += 1;
-            Some(self.matrix.row(i))
-        } else {
-            None
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.matrix.size, Some(self.matrix.size))
+impl<'a, T: From<bool> + Into<bool>> ExactSizeIterator for MatrixDataIter<'a, T> {}
+impl<'a, T: From<bool> + Into<bool>> DoubleEndedIterator for MatrixDataIter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let result = self.slice.get(self.i)?;
+        // This will make the next iteration go out of range. It's unlikely that we have a slice as big as usize::MAX.
+        self.i = self.i.wrapping_sub(1);
+        Some(result)
     }
 }
-
-impl<'r> ExactSizeIterator for Rows<'r> {}
 
 /// Iterator that yields the sequence of indices in a QR code matrix following the order in which the bits of the data
 /// stream are placed.
@@ -441,7 +568,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn toggle() {
+    fn module_toggle() {
         let mut m = Module::Dark;
         m = m.toggled();
         assert_eq!(m, Module::Light);
@@ -451,7 +578,7 @@ mod test {
 
     #[test]
     #[allow(clippy::bool_assert_comparison)]
-    fn bool_conversions() {
+    fn module_bool_conversions() {
         // Conversions are as expected
         assert_eq!(Module::from(false), Module::Light);
         assert_eq!(Module::from(true), Module::Dark);
