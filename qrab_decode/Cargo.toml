@@ -1,0 +1,6 @@
+[package]
+name = "qrab_decode"
+version = "0.1.0"
+
+[lib]
+name = "qrab_decode"

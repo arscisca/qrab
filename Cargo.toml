@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "qrab_core",
+    "qrab_encode",
+    "qrab_decode",
+    "qrab_cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[package]
+name = "qrab"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "qrab"
+
