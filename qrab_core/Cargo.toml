@@ -5,3 +5,7 @@ edition.workspace = true
 
 [lib]
 name = "qrab_core"
+
+[dependencies]
+bitvec = {workspace = true}
+

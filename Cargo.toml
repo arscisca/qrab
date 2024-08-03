@@ -5,10 +5,20 @@ members = [
     "qrab_decode",
     "qrab_cli",
 ]
+default-members = [
+    "qrab_core",
+    "qrab_encode",
+    "qrab_decode",
+    "qrab_cli",
+]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+
+[workspace.dependencies]
+thiserror = "1.0"
+bitvec = "1.0"
 
 [package]
 name = "qrab"
@@ -17,4 +27,8 @@ edition = "2021"
 
 [lib]
 name = "qrab"
+
+[dependencies]
+qrab_encode = {path = "qrab_encode"}
+qrab_decode = {path = "qrab_decode"}
 

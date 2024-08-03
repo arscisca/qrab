@@ -5,3 +5,7 @@ edition.workspace = true
 
 [lib]
 name = "qrab_encode"
+
+[dependencies]
+qrab_core = { path = "../qrab_core" }
+thiserror = { workspace = true }
