@@ -189,6 +189,7 @@ impl Mask {
 
 const NUM_MASKS: usize = 8;
 
+/// Table mapping each possible [Mask] to an arbitrary value of generic type `T`.
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct MaskTable<T> {
     data: [T; NUM_MASKS],
@@ -230,3 +231,4 @@ impl<T> std::ops::IndexMut<Mask> for MaskTable<T> {
         &mut self.data[index.code() as usize]
     }
 }
+

@@ -1,8 +1,10 @@
 mod canvas;
+mod data;
 mod meta;
 pub mod qrstandard;
 
 pub use canvas::{Canvas, Module};
+pub use data::{Mode, Segment};
 pub use meta::{Ecl, Mask, MaskTable, Meta, Version};
 
 /// QR code.
