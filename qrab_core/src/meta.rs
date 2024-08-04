@@ -136,6 +136,18 @@ impl Ecl {
     }
 }
 
+impl std::fmt::Display for Ecl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let letter = match self {
+            Ecl::L => 'L',
+            Ecl::M => 'M',
+            Ecl::Q => 'Q',
+            Ecl::H => 'H',
+        };
+        write!(f, "{}", letter)
+    }
+}
+
 /// Mask used in the QR code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]

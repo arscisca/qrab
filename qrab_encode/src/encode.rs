@@ -2,7 +2,11 @@ use std::ops::{Bound, RangeBounds, RangeInclusive};
 
 use itertools::Itertools;
 
-use qrab_core::{Ecl, Mask, MaskTable, Mode, QrCode, Segment, Version};
+use qrab_core::{Ecl, Mask, MaskTable, Version};
+use qrab_core::{Segment, Mode};
+use qrab_core::{Meta, QrCode};
+use qrab_core::qrstandard;
+
 
 /// Encoder for a QR code.
 pub struct Encoder {
@@ -20,11 +24,10 @@ impl Encoder {
     /// Encode `data`.
     pub fn encode<T: AsRef<[u8]>>(&self, data: T) -> Result<QrCode, EncodingError> {
         let data = data.as_ref();
-        let segments = segment(data, &self.constraints)?;
-        // TODO: Compression depends on version which we are fixing here. There may be more optimized compressions if we
-        //  are forced to change version.
-        let compressed = compress(&segments, *self.constraints.version.start());
-        todo!("encode compressed segments {:?}", compressed)
+        let mut segmenter = Segmenter::new(data, &self.constraints)?;
+        let meta = self.resolve_constraints(data, &mut segmenter)?;
+        let segments = segmenter.segment(meta.version);
+        todo!("encode compressed segments {:?}", segments);
     }
 
     /// Transform a range of any type to an inclusive range, given the absolute minimum and maximum values as well as
@@ -127,6 +130,68 @@ impl Encoder {
         self.constraints.mode = constraint;
         self
     }
+
+    /// Get the minimum and maximum allowed [Version]s according to the constraints.
+    fn allowed_version_extremes(&self) -> (Version, Version) {
+        (*self.constraints.version.start(), *self.constraints.version.end())
+    }
+
+    /// Get the minimum and maximum allowed [Ecl]s according to the constraints.
+    fn allowed_ecl_extremes(&self) -> (Ecl, Ecl) {
+        (*self.constraints.ecl.start(), *self.constraints.ecl.end())
+    }
+
+    /// Resolve the constraints and decide the [Version] and [Ecl].
+    fn resolve_constraints(&self, data: &[u8], segmenter: &mut Segmenter) -> Result<Meta, EncodingError> {
+        use qrstandard::segment_encoding_len as encoding_len;
+        // Binary search the most conservative version to encode the segments.
+        let (mut vmin, mut vmax) = self.allowed_version_extremes();
+        let (emin, emax) = self.allowed_ecl_extremes();
+        let (version, data_enc_len) = loop {
+            let v = version_midpoint(vmin, vmax);
+            let segments = segmenter.segment(v);
+            let curr_encoding_len: usize = segments
+                .iter()
+                .map(|segment| encoding_len(segment, v))
+                .sum();
+            if curr_encoding_len < qrstandard::num_data_bits(v, emin) {
+                // This setup can fit the data. Is there a more conservative one?
+                if vmin < v && v < vmax {
+                    vmax = v;
+                } else {
+                    break (v, curr_encoding_len);
+                }
+            } else {
+                // This setup cannot fit the data.
+                if v < vmax {
+                    vmin = v;
+                } else {
+                    return Err(EncodingError::DataTooBig(
+                            data.len(), 
+                            *self.constraints.version.end(), 
+                            emin
+                    ));
+                }
+            }
+        };
+        // Version has been chosen, choose the highest possible ECL.
+        let mut ecl = emax;
+        while ecl >= emin {
+            if data_enc_len < qrstandard::num_data_bits(version, ecl) {
+                break;
+            }
+            let Some(new_ecl) = ecl.decr() else {
+                break;
+            };
+            ecl = new_ecl;
+        };
+        Ok(Meta {
+            version,
+            ecl,
+            // For now mask doesn't matter.
+            mask: Mask::M000,
+        })
+    }
 }
 
 impl Default for Encoder {
@@ -172,75 +237,97 @@ pub enum ModeConstraint {
 pub enum EncodingError {
     #[error("cannot encode byte 0x{0:x} using mode {1:?}")]
     CannotEncodeWithMode(u8, Mode),
+    #[error("cannot encode {0} B of data with best case version {1} and ECL {2} according to the constraints")]
+    DataTooBig(usize, Version, Ecl),
 }
 
-/// Segment `data` by associating a [Mode] to each byte, and then grouping contiguous stretches of the same mode.
-fn segment(data: &[u8], constraints: &Constraints) -> Result<Vec<Segment>, EncodingError> {
-    // Determine the ideal mode for each byte regardless of constraints.
-    let free_modes = data.iter().map(|&byte| Mode::from(byte));
-    // Apply the constraint to create the segments.
-    match constraints.mode {
-        ModeConstraint::AnyMixed => {
-            Ok(free_modes
-                .chunk_by(|mode| *mode)
-                .into_iter()
-                .map(|(mode, chunk)| Segment::new(mode, chunk.count()))
-                .collect()
-            )
-        },
-        ModeConstraint::AnySingle => {
-            let most_generic_mode = free_modes
-                .reduce(Mode::most_generic)
-                .unwrap_or(Mode::Num);
-            Ok(vec![
-                Segment::new(most_generic_mode, data.len())
-            ])
-        },
-        ModeConstraint::Only(constr) => {
-            for &byte in data {
-                let desired = Mode::from(byte);
-                if !desired.could_be_promoted_to(constr) {
-                    return Err(EncodingError::CannotEncodeWithMode(byte, constr))
+/// Get the midpoint between versions `v1` and `v2`, useful for binary searching.
+fn version_midpoint(v1: Version, v2: Version) -> Version {
+    // The midpoint between two versions always has a valid number.
+    Version::new((v1.number() + v2.number()) / 2).unwrap()
+}
+
+struct Segmenter {
+    uncompressed: Vec<Segment>,
+    compressed_cache: [Option<Vec<Segment>>; 3],
+}
+
+impl Segmenter {
+    pub fn new(data: &[u8], constraints: &Constraints) -> Result<Self, EncodingError> {
+        // Determine the ideal mode for each byte regardless of constraints.
+        let free_modes = data.iter().map(|&byte| Mode::from(byte));
+        // Apply the constraint to create the segments.
+        let segmenter = match constraints.mode {
+            ModeConstraint::AnyMixed => {
+                let uncompressed = free_modes
+                    .chunk_by(|mode| *mode)
+                    .into_iter()
+                    .map(|(mode, chunk)| Segment::new(mode, chunk.count()))
+                    .collect();
+                let compressed_cache = [None, None, None];
+                Self {uncompressed, compressed_cache}
+            },
+            ModeConstraint::AnySingle => {
+                let most_generic_mode = free_modes
+                    .reduce(Mode::most_generic)
+                    .unwrap_or(Mode::Num);
+                let segments = vec![Segment::new(most_generic_mode, data.len())];
+                Self {
+                    uncompressed: segments.clone(),
+                    compressed_cache: std::array::from_fn(|_| Some(segments.clone())),
+                }
+            },
+            ModeConstraint::Only(constr) => {
+                for &byte in data {
+                    let desired = Mode::from(byte);
+                    if !desired.could_be_promoted_to(constr) {
+                        return Err(EncodingError::CannotEncodeWithMode(byte, constr))
+                    }
+                }
+                let segments = vec![Segment::new(constr, data.len())];
+                Self {
+                    uncompressed: segments.clone(),
+                    compressed_cache: std::array::from_fn(|_| Some(segments.clone())),
                 }
             }
-            Ok(vec![
-                Segment {
-                    mode: constr,
-                    len: data.len()
-                }
-            ])
+        };
+        Ok(segmenter)
+    }
+
+    /// Segment `data` by associating a [Mode] to each group of bytes and smartly apply promotions to minimize the data
+    /// storage space.
+    pub fn segment(&mut self, version: Version) -> Vec<Segment> {
+        // We already have an uncompressed segmentation, we only need to compress it according to
+        // `version`.
+        use qrstandard::segment_encoding_len as encoding_len;
+
+        let group = qrstandard::char_count_version_group(version);
+
+        // Do we already have some cache about this version group?
+        if let Some(compressed) = self.compressed_cache[group].as_ref() {
+            return compressed.clone();
         }
+
+        let mut compressed = Vec::with_capacity(self.uncompressed.len());
+        let mut current = self.uncompressed[0].clone();
+        let mut current_enc_len = encoding_len(&current, version);
+        for segment in &self.uncompressed[1..] {
+            let segment_enc_len = encoding_len(segment, version);
+            let unmerged_enc_len = current_enc_len + segment_enc_len;
+            let merged = current.merge(segment);
+            let merged_enc_len = encoding_len(&merged, version);
+            // Determine whether merging is convenient.
+            if merged_enc_len <= unmerged_enc_len {
+                current = merged;
+                current_enc_len = merged_enc_len; 
+            } else {
+                compressed.push(current);
+                current = segment.clone();
+                current_enc_len = segment_enc_len;
+            }
+        }
+        // Store the result in cache and return it.
+        self.compressed_cache[group] = Some(compressed.clone());
+        compressed
     }
 }
-
-/// Compress `segments` by applying some promotions to merge segments and minimize the overheads of a segment mode 
-/// switch. The header size depends on the `version`, thus so does the compression.
-fn compress(segments: &[Segment], version: Version) -> Vec<Segment> {
-    use qrab_core::qrstandard::segment_encoding_len as encoding_len;
-
-    // Only compress where applicable.
-    if segments.len() <= 1 {
-        return segments.to_owned();
-    }
-
-    let mut compressed = Vec::with_capacity(segments.len());
-    let mut current = segments[0].clone();
-    let mut current_enc_len = encoding_len(&current, version);
-    for segment in &segments[1..] {
-        let segment_enc_len = encoding_len(segment, version);
-        let unmerged_enc_len = current_enc_len + segment_enc_len;
-        let merged = current.merge(segment);
-        let merged_enc_len = encoding_len(&merged, version);
-        // Determine whether merging is convenient.
-        if merged_enc_len <= unmerged_enc_len {
-            current = merged;
-            current_enc_len = merged_enc_len; 
-        } else {
-            compressed.push(current);
-            current = segment.clone();
-            current_enc_len = segment_enc_len;
-        }
-    }
-    compressed
-}
-
