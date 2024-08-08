@@ -580,10 +580,17 @@ mod test {
     #[test]
     fn test_bytes_full_encoding() {
         let data = "hello".as_bytes();
-        let meta = Meta {version: Version::V01, ecl: Ecl::M, mask: Mask::M000};
+        let meta = Meta {
+            version: Version::V01,
+            ecl: Ecl::M,
+            mask: Mask::M000,
+        };
         let enc = SegmentEncoder::new(&meta);
         let codewords = enc.encode(data, [Segment::new(Mode::Bytes, data.len())]);
-        assert_eq!(codewords.len()*8, qrstandard::num_data_bits(meta.version, meta.ecl));
+        assert_eq!(
+            codewords.len() * 8,
+            qrstandard::num_data_bits(meta.version, meta.ecl)
+        );
         assert_eq!(
             &codewords,
             &vec![

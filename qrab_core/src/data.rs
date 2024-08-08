@@ -53,10 +53,7 @@ pub struct Segment {
 impl Segment {
     /// Construct a new [Segment] with the given `mode` and `len`.
     pub fn new(mode: Mode, len: usize) -> Self {
-        Self {
-            mode,
-            len,
-        }
+        Self { mode, len }
     }
 
     /// Merge two data segments, choosing the most generic [Mode] of the two.

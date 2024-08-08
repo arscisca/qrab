@@ -34,6 +34,7 @@ impl Version {
     /// assert!(Version::new(50).is_none());
     /// ```
     pub const fn new(number: u8) -> Option<Self> {
+        #[rustfmt::skip]
         let version = match number {
              1 => Self::V01,  2 => Self::V02,  3 => Self::V03,  4 => Self::V04,  5 => Self::V05,  6 => Self::V06,  7 => Self::V07,  8 => Self::V08,  9 => Self::V09, 10 => Self::V10,
             11 => Self::V11, 12 => Self::V12, 13 => Self::V13, 14 => Self::V14, 15 => Self::V15, 16 => Self::V16, 17 => Self::V17, 18 => Self::V18, 19 => Self::V19, 20 => Self::V20,
@@ -243,4 +244,3 @@ impl<T> std::ops::IndexMut<Mask> for MaskTable<T> {
         &mut self.data[index.code() as usize]
     }
 }
-
