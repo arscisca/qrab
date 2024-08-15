@@ -19,6 +19,7 @@ edition = "2021"
 [workspace.dependencies]
 thiserror = "1.0"
 bitvec = "1.0"
+reed-solomon = "0.2.1"
 
 [package]
 name = "qrab"

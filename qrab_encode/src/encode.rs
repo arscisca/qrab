@@ -33,7 +33,8 @@ impl Encoder {
         let meta = self.resolve_constraints(data, &mut segmenter)?;
         let segments = segmenter.segment(meta.version);
         let codewords = SegmentEncoder::new(&meta).encode(data, segments);
-        todo!("add error correction to codewords {:?}", codewords);
+        let codewords = EcEncoder::new(&meta).encode(&codewords);
+        todo!("create qr code {:?}", codewords);
     }
 
     /// Transform a range of any type to an inclusive range, given the absolute minimum and maximum values as well as
@@ -468,6 +469,70 @@ impl SegmentEncoder {
     }
 }
 
+
+/// Encoder for error correction.
+struct EcEncoder {
+    /// Number of codewords, including data and ECC.
+    num_codewords: usize,
+    /// Number of ECC blocks.
+    num_blocks: usize,
+    /// Number of EC codewords per block.
+    num_ec_per_block: usize,
+}
+
+impl EcEncoder {
+    pub fn new(meta: &Meta) -> Self {
+        Self {
+            num_codewords: qrstandard::num_data_and_ec_codewords(meta.version),
+            num_blocks: qrstandard::num_ec_blocks(meta.version, meta.ecl),
+            num_ec_per_block: qrstandard::num_ec_codewords_per_block(meta.version, meta.ecl)
+        }
+    }
+
+    pub fn encode(self, data: &[u8]) -> Vec<u8> {
+        let encoder = reed_solomon::Encoder::new(self.num_ec_per_block);
+        // Offsets in result.
+        let doffset = 0;
+        let eoffset = data.len();
+        // Compute result.
+        let mut result = vec![0u8; self.num_codewords];
+        for (i, dblock) in self.arrange_data_into_blocks(data).enumerate() {
+            let encoding = encoder.encode(dblock);
+            // Insert data into result.
+            for (j, &dbyte) in encoding.data().iter().enumerate() {
+                result[doffset + j * self.num_blocks + i] = dbyte;
+            }
+            // Insert EC.
+            for (j, &ebyte) in encoding.ecc().iter().enumerate() {
+                result[eoffset + j * self.num_blocks + i] = ebyte;
+            }
+        }
+        result
+    }
+
+    fn arrange_data_into_blocks<'d>(&self, data: &'d[u8]) -> impl Iterator<Item=&'d[u8]> {
+        // Process short blocks first.
+        let short_block_len = data.len() / self.num_blocks;
+        let num_short_blocks = self.num_blocks - data.len() % self.num_blocks;
+        let short_blocks = (0..num_short_blocks).map(move |block| {
+            let offset = block * short_block_len;
+            &data[offset..(offset + short_block_len)]
+        });
+        // Then process long blocks.
+        let long_block_len = short_block_len + 1;
+        let num_long_blocks = data.len() % self.num_blocks;
+        let long_blocks_base = short_block_len * num_short_blocks;
+        let long_blocks = (0..num_long_blocks).map(move |block| {
+            let offset = long_blocks_base + block * long_block_len;
+            &data[offset..(offset + long_block_len)]
+        });
+        // Chain the two.
+        short_blocks.chain(long_blocks)
+    }
+}
+
+
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -598,5 +663,25 @@ mod test {
                 0x11, 0xEC
             ]
         );
+    }
+
+    #[test]
+    fn test_ec_encoding() {
+        let meta = Meta {
+            version: Version::V01,
+            ecl: Ecl::M,
+            mask: Mask::M000,
+        };
+        let data = [
+            0x10, 0x20, 0x0c, 0x56, 0x61, 0x80, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11,
+            0xec, 0x11,
+        ];
+        let expected = [
+            0x10, 0x20, 0x0c, 0x56, 0x61, 0x80, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11,
+            0xec, 0x11, 0xa5, 0x24, 0xd4, 0xc1, 0xed, 0x36, 0xc7, 0x87, 0x2c, 0x55,
+        ];
+        let encoder = EcEncoder::new(&meta);
+        let encoded = encoder.encode(&data);
+        assert_eq!(encoded, expected);
     }
 }

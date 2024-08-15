@@ -9,6 +9,7 @@ name = "qrab_encode"
 [dependencies]
 qrab_core = { path = "../qrab_core" }
 thiserror = { workspace = true }
+reed-solomon = { workspace = true }
 bitvec = {workspace = true}
 itertools = "0.13"
 
