@@ -135,6 +135,16 @@ impl Ecl {
             Self::H => Some(Self::Q),
         }
     }
+
+    /// Get the 2 bit binary code that represents the [Ecl] in a QR code.
+    pub fn code(&self) -> u8 {
+        match self {
+            Self::L => 0b01,
+            Self::M => 0b00,
+            Self::Q => 0b11,
+            Self::H => 0b10,
+        }
+    }
 }
 
 impl std::fmt::Display for Ecl {

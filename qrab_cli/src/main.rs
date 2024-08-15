@@ -39,6 +39,7 @@ enum Command {
     },
 }
 
+#[derive(Debug, Clone)]
 enum Output {
     Stdout,
     Text(PathBuf),
@@ -80,13 +81,19 @@ fn main() -> Result<()> {
             };
             let qrcode = Encoder::new().encode(bytes)?;
             match output {
+                Output::Stdout => {
+                    let renderer = AsciiRenderer::new();
+                    renderer.render(&mut std::io::stdout(), qrcode)?;
+                }
                 Output::Text(path) => {
                     let f = File::create(path)?;
                     let mut writer = BufWriter::new(f);
                     let renderer = AsciiRenderer::new();
                     renderer.render(&mut writer, qrcode)?;
                 }
-                _ => todo!("rendering"),
+                Output::Png(path) => {
+                    todo!("rendering to PNG at {:?}", path);
+                }
             }
         }
         Command::Decode { .. } => {

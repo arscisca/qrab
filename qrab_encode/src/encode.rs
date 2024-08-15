@@ -13,6 +13,8 @@ use qrab_core::{Ecl, Mask, MaskTable, Version};
 use qrab_core::{Meta, QrCode};
 use qrab_core::{Mode, Segment};
 
+use crate::paint::Painter;
+
 /// Encoder for a QR code.
 pub struct Encoder {
     constraints: Constraints,
@@ -34,7 +36,10 @@ impl Encoder {
         let segments = segmenter.segment(meta.version);
         let codewords = SegmentEncoder::new(&meta).encode(data, segments);
         let codewords = EcEncoder::new(&meta).encode(&codewords);
-        todo!("create qr code {:?}", codewords);
+        let canvas = Painter::new(&meta).paint(codewords);
+        // We trust the painter to create the right canvas, otherwise it's a library bug.
+        let qrcode = QrCode::new(canvas, meta).unwrap();
+        Ok(qrcode)
     }
 
     /// Transform a range of any type to an inclusive range, given the absolute minimum and maximum values as well as
@@ -469,7 +474,6 @@ impl SegmentEncoder {
     }
 }
 
-
 /// Encoder for error correction.
 struct EcEncoder {
     /// Number of codewords, including data and ECC.
@@ -485,7 +489,7 @@ impl EcEncoder {
         Self {
             num_codewords: qrstandard::num_data_and_ec_codewords(meta.version),
             num_blocks: qrstandard::num_ec_blocks(meta.version, meta.ecl),
-            num_ec_per_block: qrstandard::num_ec_codewords_per_block(meta.version, meta.ecl)
+            num_ec_per_block: qrstandard::num_ec_codewords_per_block(meta.version, meta.ecl),
         }
     }
 
@@ -510,7 +514,7 @@ impl EcEncoder {
         result
     }
 
-    fn arrange_data_into_blocks<'d>(&self, data: &'d[u8]) -> impl Iterator<Item=&'d[u8]> {
+    fn arrange_data_into_blocks<'d>(&self, data: &'d [u8]) -> impl Iterator<Item = &'d [u8]> {
         // Process short blocks first.
         let short_block_len = data.len() / self.num_blocks;
         let num_short_blocks = self.num_blocks - data.len() % self.num_blocks;
@@ -530,8 +534,6 @@ impl EcEncoder {
         short_blocks.chain(long_blocks)
     }
 }
-
-
 
 #[cfg(test)]
 mod test {

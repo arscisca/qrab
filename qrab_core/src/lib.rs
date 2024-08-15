@@ -3,7 +3,7 @@ mod data;
 mod meta;
 pub mod qrstandard;
 
-pub use canvas::{Canvas, Module};
+pub use canvas::{Canvas, Module, ReservedAreaAtlas, canvas_position};
 pub use data::{Mode, Segment};
 pub use meta::{Ecl, Mask, MaskTable, Meta, Version};
 
