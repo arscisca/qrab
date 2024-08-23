@@ -321,9 +321,13 @@ impl Segmenter {
         // `version`.
         use qrstandard::segment_encoding_len as encoding_len;
 
-        let group = qrstandard::char_count_version_group(version);
+        // Is there any meaningful compression to do?
+        if self.uncompressed.len() == 1 {
+            return self.uncompressed.clone();
+        }
 
         // Do we already have some cache about this version group?
+        let group = qrstandard::char_count_version_group(version);
         if let Some(compressed) = self.compressed_cache[group].as_ref() {
             return compressed.clone();
         }
@@ -379,7 +383,11 @@ impl SegmentEncoder {
             }
             offset += segment.len;
         }
-        self.add_padding();
+        // Add the terminator character if it fits
+        if self.bits.capacity() - self.bits.len() >= 4 {
+            self.bits.extend(bits![0, 0, 0, 0]);
+        }
+        self.pad();
         self.bits.into_vec()
     }
 
@@ -457,11 +465,13 @@ impl SegmentEncoder {
 
     /// Append padding by completing any last incomplete codeword, and then appending the
     /// predefined padding codewords until the end.
-    fn add_padding(&mut self) {
+    fn pad(&mut self) {
         // Pad with zeros until the last codeword is filled.
         let last_codeword_missing_bits = self.bits.len() % 8;
-        self.bits
-            .resize(self.bits.len() + last_codeword_missing_bits, false);
+        if last_codeword_missing_bits > 0 {
+            self.bits
+                .resize(self.bits.len() + 8 - last_codeword_missing_bits, false);
+        }
         // Append padding codewords.
         let mut padding = 0b11101100u8;
         const PADDING_TOGGLE: u8 = 0b11111101u8;
